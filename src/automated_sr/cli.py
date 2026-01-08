@@ -9,15 +9,18 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from automated_sr.analysis import EffectMeasure, ForestPlot, MetaAnalysis, PoolingMethod, SecondaryFilter
 from automated_sr.citations.ris_parser import parse_ris_file
 from automated_sr.citations.zotero import ZoteroClient, ZoteroError
 from automated_sr.config import get_config
 from automated_sr.database import Database
 from automated_sr.extraction.extractor import DataExtractor
 from automated_sr.models import ExtractionVariable, ReviewProtocol
+from automated_sr.openalex import OpenAlexClient, PDFRetriever
 from automated_sr.output.exporter import Exporter
 from automated_sr.screening.abstract import AbstractScreener
 from automated_sr.screening.fulltext import FullTextScreener
+from automated_sr.screening.multi_reviewer import MultiReviewerScreener, create_default_reviewers
 
 app = typer.Typer(
     name="sr",
@@ -509,6 +512,498 @@ def zotero_collections() -> None:
         table.add_row(c["key"], c["name"])
 
     console.print(table)
+
+
+@app.command("search-openalex")
+def search_openalex(
+    query: Annotated[str | None, typer.Argument(help="Search query (title/abstract keywords)")] = None,
+    review: Annotated[str, typer.Option("--review", "-r", help="Review name")] = "",
+    year_from: Annotated[int | None, typer.Option("--year-from", help="Minimum publication year")] = None,
+    year_to: Annotated[int | None, typer.Option("--year-to", help="Maximum publication year")] = None,
+    open_access: Annotated[bool, typer.Option("--oa", help="Only open access works")] = False,
+    limit: Annotated[int, typer.Option("--limit", "-l", help="Maximum results to fetch")] = 100,
+    doi: Annotated[str | None, typer.Option("--doi", help="Fetch single work by DOI")] = None,
+) -> None:
+    """Search OpenAlex for articles and import to review."""
+    db = get_db()
+
+    # Validate review
+    if not review:
+        console.print("[red]Error:[/red] --review is required")
+        raise typer.Exit(1)
+
+    review_data = db.get_review_by_name(review)
+    if not review_data:
+        console.print(f"[red]Error:[/red] Review '{review}' not found. Run 'sr init {review}' first.")
+        raise typer.Exit(1)
+    review_id = review_data["id"]
+
+    # Initialize OpenAlex client
+    config = get_config()
+    client = OpenAlexClient(email=config.openalex_email)
+
+    if doi:
+        # Fetch single work by DOI
+        console.print(f"[blue]Looking up DOI: {doi}[/blue]")
+        work = client.get_by_doi(doi)
+        if not work:
+            console.print(f"[red]Error:[/red] Work not found for DOI: {doi}")
+            raise typer.Exit(1)
+        works = [work]
+    else:
+        # Search by query
+        if not query:
+            console.print("[red]Error:[/red] Either --query or --doi is required")
+            raise typer.Exit(1)
+
+        filters: dict[str, str | bool] = {}
+        if year_from:
+            filters["from_publication_date"] = f"{year_from}-01-01"
+        if year_to:
+            filters["to_publication_date"] = f"{year_to}-12-31"
+        if open_access:
+            filters["is_oa"] = True
+
+        console.print(f"[blue]Searching OpenAlex for: {query}[/blue]")
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as progress:
+            progress.add_task("Fetching results...", total=None)
+            works = client.search(query=query, filters=filters, limit=limit)
+
+    if not works:
+        console.print("[yellow]No results found.[/yellow]")
+        db.close()
+        return
+
+    # Convert to citations and add to database
+    citations = [client.to_citation(w) for w in works]
+    db.add_citations(citations, review_id)
+
+    console.print(f"[green]Imported {len(citations)} citations from OpenAlex[/green]")
+
+    # Show summary
+    with_abstract = sum(1 for c in citations if c.has_abstract())
+    with_doi = sum(1 for c in citations if c.doi)
+    console.print(f"  - {with_abstract} with abstracts")
+    console.print(f"  - {with_doi} with DOIs")
+
+    db.close()
+
+
+@app.command("fetch-pdfs")
+def fetch_pdfs(
+    review: Annotated[str, typer.Option("--review", "-r", help="Review name")],
+    limit: Annotated[int | None, typer.Option("--limit", "-l", help="Maximum PDFs to fetch")] = None,
+    overwrite: Annotated[bool, typer.Option("--overwrite", help="Overwrite existing PDFs")] = False,
+) -> None:
+    """Fetch PDFs for citations using OpenAlex open access URLs."""
+    db = get_db()
+    config = get_config()
+
+    review_data = db.get_review_by_name(review)
+    if not review_data:
+        console.print(f"[red]Error:[/red] Review '{review}' not found")
+        raise typer.Exit(1)
+
+    review_id = review_data["id"]
+
+    # Get citations with DOIs that need PDFs
+    all_citations = db.get_citations(review_id)
+    citations = [c for c in all_citations if c.doi and (overwrite or not c.has_pdf())]
+
+    if not citations:
+        console.print("[green]All citations with DOIs already have PDFs.[/green]")
+        db.close()
+        return
+
+    if limit:
+        citations = citations[:limit]
+
+    console.print(f"[blue]Attempting to fetch PDFs for {len(citations)} citations...[/blue]")
+
+    # Initialize clients
+    openalex = OpenAlexClient(email=config.openalex_email)
+    config.ensure_pdf_dir()
+    retriever = PDFRetriever(config.pdf_download_dir)  # type: ignore[arg-type]
+
+    success_count = 0
+    fail_count = 0
+
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
+        task = progress.add_task("Fetching PDFs...", total=len(citations))
+
+        for citation in citations:
+            progress.advance(task)
+
+            # Look up work in OpenAlex
+            work = openalex.get_by_doi(citation.doi)  # type: ignore[arg-type]
+            if not work:
+                fail_count += 1
+                continue
+
+            # Get PDF URL
+            pdf_url = retriever.get_pdf_url(work)
+            if not pdf_url:
+                fail_count += 1
+                continue
+
+            # Download PDF
+            filename = f"{citation.id}_{citation.doi.replace('/', '_')}"  # type: ignore[union-attr]
+            pdf_path = retriever.download_pdf(pdf_url, filename)
+            if pdf_path:
+                # Update citation in database
+                db.conn.execute("UPDATE citations SET pdf_path = ? WHERE id = ?", (str(pdf_path), citation.id))
+                db.conn.commit()
+                success_count += 1
+                console.print(f"  [green]Downloaded:[/green] {citation.title[:50]}...")
+            else:
+                fail_count += 1
+
+    console.print("\n[bold]PDF Fetch Complete[/bold]")
+    console.print(f"  Downloaded: {success_count}")
+    console.print(f"  Failed/unavailable: {fail_count}")
+
+    db.close()
+
+
+@app.command("screen-multi")
+def screen_multi(
+    review: Annotated[str, typer.Option("--review", "-r", help="Review name")],
+    stage: Annotated[str, typer.Option("--stage", "-s", help="Screening stage: abstract or fulltext")] = "abstract",
+    limit: Annotated[int | None, typer.Option("--limit", "-l", help="Maximum citations to screen")] = None,
+) -> None:
+    """Screen citations with multiple reviewers (requires reviewers in protocol)."""
+    db = get_db()
+
+    review_data = db.get_review_by_name(review)
+    if not review_data:
+        console.print(f"[red]Error:[/red] Review '{review}' not found")
+        raise typer.Exit(1)
+
+    review_id = review_data["id"]
+    protocol = db.get_protocol(review_id)
+    if not protocol:
+        console.print("[red]Error:[/red] No protocol found for this review.")
+        raise typer.Exit(1)
+
+    # Check if multi-reviewer is configured
+    if not protocol.has_multi_reviewer():
+        console.print("[yellow]No multi-reviewer configuration in protocol.[/yellow]")
+        console.print("Add reviewers to your protocol YAML or use default configuration.")
+
+        # Offer to use defaults
+        use_defaults = typer.confirm("Use default reviewers (2x Haiku + Sonnet tiebreaker)?")
+        if use_defaults:
+            protocol.reviewers = create_default_reviewers()
+        else:
+            raise typer.Exit(0)
+
+    # Get unscreened citations
+    if stage == "abstract":
+        citations = db.get_unscreened_abstracts(review_id)
+    else:
+        citations = db.get_unscreened_fulltext(review_id)
+
+    if not citations:
+        console.print(f"[green]All citations have been {stage} screened.[/green]")
+        db.close()
+        return
+
+    if limit:
+        citations = citations[:limit]
+
+    console.print(f"[blue]Multi-reviewer screening {len(citations)} citations at {stage} stage...[/blue]")
+    console.print(f"Primary reviewers: {[r.name for r in protocol.get_primary_reviewers()]}")
+    tiebreaker = protocol.get_tiebreaker()
+    if tiebreaker:
+        console.print(f"Tiebreaker: {tiebreaker.name} ({tiebreaker.model})")
+
+    screener = MultiReviewerScreener(protocol, stage=stage)
+
+    tiebreaker_count = 0
+
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
+        task = progress.add_task("Screening...", total=len(citations))
+
+        for citation in citations:
+            result = screener.screen(citation)
+
+            # Save individual reviewer results
+            for reviewer_result in result.reviewer_results:
+                if stage == "abstract":
+                    db.save_abstract_screening(reviewer_result)
+                else:
+                    db.save_fulltext_screening(reviewer_result)
+
+            # Save tiebreaker if used
+            if result.tiebreaker_result:
+                if stage == "abstract":
+                    db.save_abstract_screening(result.tiebreaker_result)
+                else:
+                    db.save_fulltext_screening(result.tiebreaker_result)
+                tiebreaker_count += 1
+
+            # Save consensus
+            db.save_consensus(citation.id or 0, stage, result.consensus_decision, result.required_tiebreaker)
+
+            progress.advance(task)
+
+            # Show result
+            decision_colors = {"include": "green", "exclude": "red", "uncertain": "yellow"}
+            color = decision_colors[result.consensus_decision.value]
+            tb_marker = " [tiebreaker]" if result.required_tiebreaker else ""
+            decision_text = result.consensus_decision.value.upper()
+            console.print(f"  [{color}]{decision_text}{tb_marker}[/{color}]: {citation.title[:50]}...")
+
+    # Show summary
+    stats = db.get_stats(review_id)
+    console.print(f"\n[bold]Multi-Reviewer {stage.title()} Screening Complete[/bold]")
+    if stage == "abstract":
+        console.print(f"  Included: {stats.abstract_included}")
+        console.print(f"  Excluded: {stats.abstract_excluded}")
+        console.print(f"  Uncertain: {stats.abstract_uncertain}")
+    else:
+        console.print(f"  Included: {stats.fulltext_included}")
+        console.print(f"  Excluded: {stats.fulltext_excluded}")
+        console.print(f"  Uncertain: {stats.fulltext_uncertain}")
+    console.print(f"  Tiebreaker needed: {tiebreaker_count}")
+
+    db.close()
+
+
+@app.command("filter")
+def apply_filter(
+    review: Annotated[str, typer.Option("--review", "-r", help="Review name")],
+    required_fields: Annotated[
+        list[str] | None, typer.Option("--required", help="Required extraction fields (comma-separated)")
+    ] = None,
+    interventions: Annotated[
+        list[str] | None, typer.Option("--interventions", help="Eligible interventions (comma-separated)")
+    ] = None,
+    comparators: Annotated[
+        list[str] | None, typer.Option("--comparators", help="Eligible comparators (comma-separated)")
+    ] = None,
+) -> None:
+    """Apply secondary filters to extracted data."""
+    db = get_db()
+
+    review_data = db.get_review_by_name(review)
+    if not review_data:
+        console.print(f"[red]Error:[/red] Review '{review}' not found")
+        raise typer.Exit(1)
+
+    review_id = review_data["id"]
+
+    # Get extracted citations
+    citations = db.get_extracted_citations(review_id)
+    if not citations:
+        console.print("[yellow]No extracted citations to filter.[/yellow]")
+        db.close()
+        return
+
+    # Build citations with extractions list
+    citations_with_extractions = []
+    for citation in citations:
+        extraction = db.get_extraction(citation.id or 0)
+        if extraction:
+            citations_with_extractions.append((citation, extraction))
+
+    if not citations_with_extractions:
+        console.print("[yellow]No extractions found.[/yellow]")
+        db.close()
+        return
+
+    console.print(f"[blue]Applying filters to {len(citations_with_extractions)} citations...[/blue]")
+
+    # Create filter
+    secondary_filter = SecondaryFilter(
+        required_outcome_fields=required_fields,
+        eligible_interventions=interventions,
+        eligible_comparators=comparators,
+    )
+
+    # Apply filters (includes duplicate checking)
+    passed, filter_results = secondary_filter.apply_all(citations_with_extractions)
+
+    # Save filter results (only failures for tracking)
+    for result in filter_results:
+        if not result.passed:
+            db.save_filter_result(
+                result.citation_id,
+                result.passed,
+                result.reason.value if result.reason else None,
+                result.details,
+            )
+
+    # Summary
+    failed = len(citations_with_extractions) - len(passed)
+    console.print("\n[bold]Secondary Filtering Complete[/bold]")
+    console.print(f"  Passed: {len(passed)}")
+    console.print(f"  Filtered out: {failed}")
+
+    # Show filter breakdown
+    from collections import Counter
+
+    reasons = Counter(r.reason.value for r in filter_results if not r.passed and r.reason is not None)
+    if reasons:
+        console.print("\n[yellow]Filter reasons:[/yellow]")
+        for reason, count in reasons.most_common():
+            console.print(f"  - {reason}: {count}")
+
+    db.close()
+
+
+@app.command("analyze")
+def analyze(
+    review: Annotated[str, typer.Option("--review", "-r", help="Review name")],
+    effect: Annotated[str, typer.Option("--effect", "-e", help="Effect measure: MD, SMD, OR, RR")] = "MD",
+    model: Annotated[str, typer.Option("--model", "-m", help="Pooling model: fixed or random")] = "random",
+    output: Annotated[Path, typer.Option("--output", "-o", help="Output directory")] = Path("./analysis"),
+    effect_field: Annotated[
+        str, typer.Option("--effect-field", help="Extraction field for effect size")
+    ] = "effect_size",
+    se_field: Annotated[str, typer.Option("--se-field", help="Extraction field for standard error")] = "standard_error",
+) -> None:
+    """Run meta-analysis and generate forest plot."""
+    db = get_db()
+
+    review_data = db.get_review_by_name(review)
+    if not review_data:
+        console.print(f"[red]Error:[/red] Review '{review}' not found")
+        raise typer.Exit(1)
+
+    review_id = review_data["id"]
+
+    # Get extracted citations that passed filtering
+    citations = db.get_extracted_citations(review_id)
+    if not citations:
+        console.print("[yellow]No extracted citations for analysis.[/yellow]")
+        db.close()
+        return
+
+    # Parse effect measure and pooling model
+    try:
+        effect_measure = EffectMeasure(effect.upper())
+    except ValueError:
+        console.print(f"[red]Error:[/red] Invalid effect measure: {effect}. Use MD, SMD, OR, or RR.")
+        raise typer.Exit(1) from None
+
+    try:
+        pooling_method = PoolingMethod(model.lower())
+    except ValueError:
+        console.print(f"[red]Error:[/red] Invalid pooling model: {model}. Use 'fixed' or 'random'.")
+        raise typer.Exit(1) from None
+
+    # Build effect sizes from extractions
+    from automated_sr.analysis import EffectSize
+
+    effects: list[EffectSize] = []
+    for citation in citations:
+        extraction = db.get_extraction(citation.id or 0)
+        if not extraction:
+            continue
+
+        effect_val = extraction.extracted_data.get(effect_field)
+        se_val = extraction.extracted_data.get(se_field)
+
+        if effect_val is None or se_val is None:
+            console.print(f"[yellow]Skipping {citation.title[:40]}... (missing effect/SE)[/yellow]")
+            continue
+
+        try:
+            effect_float = float(effect_val)
+            se_float = float(se_val)
+        except (ValueError, TypeError):
+            console.print(f"[yellow]Skipping {citation.title[:40]}... (invalid effect/SE values)[/yellow]")
+            continue
+
+        # Calculate CI
+        ci_lower = effect_float - 1.96 * se_float
+        ci_upper = effect_float + 1.96 * se_float
+
+        study_name = f"{citation.authors[0] if citation.authors else 'Unknown'} {citation.year or ''}"
+        effects.append(
+            EffectSize(
+                study_id=citation.id or 0,
+                study_name=study_name,
+                effect=effect_float,
+                se=se_float,
+                ci_lower=ci_lower,
+                ci_upper=ci_upper,
+            )
+        )
+
+    if len(effects) < 2:
+        console.print("[red]Error:[/red] Need at least 2 studies with effect sizes for meta-analysis.")
+        db.close()
+        return
+
+    console.print(f"[blue]Running {pooling_method.value} effects meta-analysis with {len(effects)} studies...[/blue]")
+
+    # Run meta-analysis (use log scale for ratio measures)
+    log_scale = effect_measure in (EffectMeasure.OR, EffectMeasure.RR)
+
+    if pooling_method == PoolingMethod.FIXED:
+        pooled = MetaAnalysis.fixed_effects(effects, log_scale=log_scale)
+    else:
+        pooled = MetaAnalysis.random_effects(effects, log_scale=log_scale)
+
+    # Display results
+    console.print(f"\n[bold]Meta-Analysis Results ({effect_measure.value})[/bold]")
+    console.print(f"  Pooled effect: {pooled.effect:.3f} (95% CI: {pooled.ci_lower:.3f} to {pooled.ci_upper:.3f})")
+    console.print(f"  Z-score: {pooled.z_score:.3f}, p-value: {pooled.p_value:.4f}")
+    console.print(f"  Heterogeneity: I² = {pooled.i_squared:.1f}%, Q = {pooled.q_statistic:.2f}")
+    if pooled.tau_squared is not None:
+        console.print(f"  Between-study variance: τ² = {pooled.tau_squared:.4f}")
+
+    # Generate forest plot
+    output.mkdir(parents=True, exist_ok=True)
+
+    forest = ForestPlot(effect_measure=effect_measure)
+    fig = forest.create(
+        effects=effects,
+        pooled=pooled,
+        title=f"Forest Plot - {review}",
+    )
+
+    plot_path = output / f"{review}_forest_plot.png"
+    forest.save(fig, plot_path)
+    console.print(f"\n[green]Forest plot saved:[/green] {plot_path}")
+
+    # Export results
+    import json
+
+    results_path = output / f"{review}_meta_analysis.json"
+    results_data = {
+        "effect_measure": effect_measure.value,
+        "pooling_method": pooling_method.value,
+        "n_studies": len(effects),
+        "pooled_effect": pooled.effect,
+        "pooled_se": pooled.se,
+        "ci_lower": pooled.ci_lower,
+        "ci_upper": pooled.ci_upper,
+        "z_score": pooled.z_score,
+        "p_value": pooled.p_value,
+        "i_squared": pooled.i_squared,
+        "q_statistic": pooled.q_statistic,
+        "tau_squared": pooled.tau_squared,
+        "studies": [
+            {
+                "study_id": e.study_id,
+                "study_name": e.study_name,
+                "effect": e.effect,
+                "se": e.se,
+                "ci_lower": e.ci_lower,
+                "ci_upper": e.ci_upper,
+                "weight": e.weight,
+            }
+            for e in effects
+        ],
+    }
+    with open(results_path, "w") as f:
+        json.dump(results_data, f, indent=2)
+    console.print(f"[green]Results saved:[/green] {results_path}")
+
+    db.close()
 
 
 if __name__ == "__main__":

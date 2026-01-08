@@ -16,6 +16,14 @@ class ScreeningDecision(str, Enum):
     UNCERTAIN = "uncertain"
 
 
+class APIProvider(str, Enum):
+    """Supported LLM API providers."""
+
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
+    OPENROUTER = "openrouter"
+
+
 class Citation(BaseModel):
     """A citation/reference from a systematic review search."""
 
@@ -48,6 +56,7 @@ class ScreeningResult(BaseModel):
     decision: ScreeningDecision
     reasoning: str
     model: str
+    reviewer_name: str | None = None  # Name of the reviewer (for multi-reviewer)
     screened_at: datetime = Field(default_factory=datetime.now)
     pdf_error: str | None = None  # For full-text screening errors
 
@@ -69,6 +78,28 @@ class ExtractionResult(BaseModel):
     extracted_at: datetime = Field(default_factory=datetime.now)
 
 
+class ReviewerConfig(BaseModel):
+    """Configuration for a single reviewer in multi-reviewer mode."""
+
+    name: str
+    model: str  # e.g., "claude-sonnet-4-20250514", "gpt-4.1"
+    api: APIProvider
+    prompt_template: str = "rigorous"  # "rigorous", "sensitive", "specific", or custom
+    custom_prompt: str | None = None  # Custom prompt if template is "custom"
+    role: str = "primary"  # "primary" or "tiebreaker"
+
+
+class MultiReviewerScreeningResult(BaseModel):
+    """Result from multiple reviewers screening a citation."""
+
+    citation_id: int
+    reviewer_results: list[ScreeningResult]
+    consensus_decision: ScreeningDecision
+    required_tiebreaker: bool = False
+    tiebreaker_result: ScreeningResult | None = None
+    screened_at: datetime = Field(default_factory=datetime.now)
+
+
 class ReviewProtocol(BaseModel):
     """A systematic review protocol defining objectives and criteria."""
 
@@ -77,7 +108,8 @@ class ReviewProtocol(BaseModel):
     inclusion_criteria: list[str]
     exclusion_criteria: list[str]
     extraction_variables: list[ExtractionVariable] = Field(default_factory=list)
-    model: str = "claude-sonnet-4-20250514"
+    model: str = "claude-sonnet-4-5-20250929"
+    reviewers: list[ReviewerConfig] = Field(default_factory=list)
 
     @classmethod
     def from_yaml(cls, path: Path) -> "ReviewProtocol":
@@ -98,6 +130,10 @@ class ReviewProtocol(BaseModel):
                 ExtractionVariable(**var) if isinstance(var, dict) else var for var in data["extraction_variables"]
             ]
 
+        # Convert reviewers dicts to ReviewerConfig objects
+        if "reviewers" in data:
+            data["reviewers"] = [ReviewerConfig(**rev) if isinstance(rev, dict) else rev for rev in data["reviewers"]]
+
         return cls(**data)
 
     def to_yaml(self, path: Path) -> None:
@@ -113,8 +149,25 @@ class ReviewProtocol(BaseModel):
             "settings": {"model": self.model},
         }
 
+        # Include reviewers if configured
+        if self.reviewers:
+            data["reviewers"] = [rev.model_dump() for rev in self.reviewers]
+
         with open(path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+    def get_primary_reviewers(self) -> list[ReviewerConfig]:
+        """Get reviewers with role='primary'."""
+        return [r for r in self.reviewers if r.role == "primary"]
+
+    def get_tiebreaker(self) -> ReviewerConfig | None:
+        """Get the tiebreaker reviewer if configured."""
+        tiebreakers = [r for r in self.reviewers if r.role == "tiebreaker"]
+        return tiebreakers[0] if tiebreakers else None
+
+    def has_multi_reviewer(self) -> bool:
+        """Check if multi-reviewer mode is configured."""
+        return len(self.get_primary_reviewers()) > 1
 
 
 class ReviewStats(BaseModel):

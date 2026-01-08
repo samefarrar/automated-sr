@@ -18,9 +18,14 @@ class ZoteroConfig(BaseModel):
 class Config(BaseModel):
     """Global configuration for the systematic review tool."""
 
-    # API settings
+    # LLM API settings
     anthropic_api_key: str | None = Field(default=None)
-    default_model: str = "claude-sonnet-4-20250514"
+    openai_api_key: str | None = Field(default=None)
+    openrouter_api_key: str | None = Field(default=None)
+    default_model: str = "claude-sonnet-4-5-20250929"
+
+    # OpenAlex settings
+    openalex_email: str | None = Field(default=None)
 
     # Zotero settings
     zotero: ZoteroConfig = Field(default_factory=ZoteroConfig)
@@ -28,6 +33,7 @@ class Config(BaseModel):
     # Paths
     data_dir: Path = Field(default_factory=lambda: Path.cwd() / ".sr_data")
     database_path: Path | None = None
+    pdf_download_dir: Path | None = None
 
     # Screening settings
     screen_batch_size: int = 10  # Number of citations to process in parallel
@@ -36,9 +42,17 @@ class Config(BaseModel):
     def __init__(self, **data: object) -> None:
         super().__init__(**data)
 
-        # Load API key from environment if not provided
+        # Load API keys from environment if not provided
         if self.anthropic_api_key is None:
             self.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if self.openai_api_key is None:
+            self.openai_api_key = os.environ.get("OPENAI_API_KEY")
+        if self.openrouter_api_key is None:
+            self.openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
+
+        # Load OpenAlex email from environment
+        if self.openalex_email is None:
+            self.openalex_email = os.environ.get("OPENALEX_EMAIL")
 
         # Load Zotero settings from environment if not provided
         if self.zotero.library_id is None:
@@ -46,13 +60,20 @@ class Config(BaseModel):
         if self.zotero.api_key is None:
             self.zotero.api_key = os.environ.get("ZOTERO_API_KEY")
 
-        # Set default database path
+        # Set default paths
         if self.database_path is None:
             self.database_path = self.data_dir / "reviews.db"
+        if self.pdf_download_dir is None:
+            self.pdf_download_dir = self.data_dir / "pdfs"
 
     def ensure_data_dir(self) -> None:
         """Create the data directory if it doesn't exist."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
+
+    def ensure_pdf_dir(self) -> None:
+        """Create the PDF download directory if it doesn't exist."""
+        if self.pdf_download_dir:
+            self.pdf_download_dir.mkdir(parents=True, exist_ok=True)
 
 
 # Global config instance

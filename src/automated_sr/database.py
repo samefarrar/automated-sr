@@ -43,17 +43,18 @@ CREATE TABLE IF NOT EXISTS citations (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Abstract screening results
+-- Abstract screening results (with reviewer_name for multi-reviewer support)
 CREATE TABLE IF NOT EXISTS abstract_screening (
     id INTEGER PRIMARY KEY,
     citation_id INTEGER REFERENCES citations(id),
     decision TEXT CHECK(decision IN ('include', 'exclude', 'uncertain')),
     reasoning TEXT,
     model TEXT,
+    reviewer_name TEXT,
     screened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Full-text screening results
+-- Full-text screening results (with reviewer_name for multi-reviewer support)
 CREATE TABLE IF NOT EXISTS fulltext_screening (
     id INTEGER PRIMARY KEY,
     citation_id INTEGER REFERENCES citations(id),
@@ -61,6 +62,7 @@ CREATE TABLE IF NOT EXISTS fulltext_screening (
     reasoning TEXT,
     pdf_error TEXT,
     model TEXT,
+    reviewer_name TEXT,
     screened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -73,11 +75,38 @@ CREATE TABLE IF NOT EXISTS extractions (
     extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Screening consensus (for multi-reviewer mode)
+CREATE TABLE IF NOT EXISTS screening_consensus (
+    id INTEGER PRIMARY KEY,
+    citation_id INTEGER REFERENCES citations(id),
+    stage TEXT CHECK(stage IN ('abstract', 'fulltext')),
+    consensus_decision TEXT CHECK(consensus_decision IN ('include', 'exclude', 'uncertain')),
+    required_tiebreaker BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Secondary filtering results
+CREATE TABLE IF NOT EXISTS secondary_filters (
+    id INTEGER PRIMARY KEY,
+    citation_id INTEGER REFERENCES citations(id),
+    passed BOOLEAN,
+    reason TEXT,
+    details TEXT,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_citations_review ON citations(review_id);
 CREATE INDEX IF NOT EXISTS idx_abstract_screening_citation ON abstract_screening(citation_id);
 CREATE INDEX IF NOT EXISTS idx_fulltext_screening_citation ON fulltext_screening(citation_id);
 CREATE INDEX IF NOT EXISTS idx_extractions_citation ON extractions(citation_id);
+CREATE INDEX IF NOT EXISTS idx_screening_consensus_citation ON screening_consensus(citation_id);
+CREATE INDEX IF NOT EXISTS idx_secondary_filters_citation ON secondary_filters(citation_id);
+"""
+
+MIGRATIONS = """
+-- Add reviewer_name column if it doesn't exist (for backward compatibility)
+-- Note: SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we handle this in code
 """
 
 
@@ -102,7 +131,23 @@ class Database:
     def _init_schema(self) -> None:
         """Initialize the database schema."""
         self.conn.executescript(SCHEMA)
+        self._run_migrations()
         self.conn.commit()
+
+    def _run_migrations(self) -> None:
+        """Run database migrations for backward compatibility."""
+        # Add reviewer_name column to abstract_screening if missing
+        self._add_column_if_missing("abstract_screening", "reviewer_name", "TEXT")
+        # Add reviewer_name column to fulltext_screening if missing
+        self._add_column_if_missing("fulltext_screening", "reviewer_name", "TEXT")
+
+    def _add_column_if_missing(self, table: str, column: str, col_type: str) -> None:
+        """Add a column to a table if it doesn't exist."""
+        cursor = self.conn.execute(f"PRAGMA table_info({table})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column not in columns:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+            logger.info("Added column %s to table %s", column, table)
 
     def close(self) -> None:
         """Close the database connection."""
@@ -214,9 +259,16 @@ class Database:
     def save_abstract_screening(self, result: ScreeningResult) -> None:
         """Save an abstract screening result."""
         self.conn.execute(
-            """INSERT INTO abstract_screening (citation_id, decision, reasoning, model, screened_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (result.citation_id, result.decision.value, result.reasoning, result.model, result.screened_at),
+            """INSERT INTO abstract_screening (citation_id, decision, reasoning, model, reviewer_name, screened_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                result.citation_id,
+                result.decision.value,
+                result.reasoning,
+                result.model,
+                result.reviewer_name,
+                result.screened_at,
+            ),
         )
         self.conn.commit()
 
@@ -260,14 +312,16 @@ class Database:
     def save_fulltext_screening(self, result: ScreeningResult) -> None:
         """Save a full-text screening result."""
         self.conn.execute(
-            """INSERT INTO fulltext_screening (citation_id, decision, reasoning, pdf_error, model, screened_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO fulltext_screening
+               (citation_id, decision, reasoning, pdf_error, model, reviewer_name, screened_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 result.citation_id,
                 result.decision.value,
                 result.reasoning,
                 result.pdf_error,
                 result.model,
+                result.reviewer_name,
                 result.screened_at,
             ),
         )
@@ -416,3 +470,99 @@ class Database:
         stats.extracted = cursor.fetchone()[0]
 
         return stats
+
+    # Multi-reviewer consensus operations
+    def save_consensus(
+        self,
+        citation_id: int,
+        stage: str,
+        consensus_decision: ScreeningDecision,
+        required_tiebreaker: bool = False,
+    ) -> int:
+        """Save a screening consensus result."""
+        cursor = self.conn.execute(
+            """INSERT INTO screening_consensus
+               (citation_id, stage, consensus_decision, required_tiebreaker)
+               VALUES (?, ?, ?, ?)""",
+            (citation_id, stage, consensus_decision.value, required_tiebreaker),
+        )
+        self.conn.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+
+    def get_consensus(self, citation_id: int, stage: str) -> dict | None:
+        """Get the consensus for a citation at a specific stage."""
+        cursor = self.conn.execute(
+            "SELECT * FROM screening_consensus WHERE citation_id = ? AND stage = ?",
+            (citation_id, stage),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_all_reviewer_results(self, citation_id: int, stage: str) -> list[ScreeningResult]:
+        """Get all reviewer results for a citation at a specific stage."""
+        table = "abstract_screening" if stage == "abstract" else "fulltext_screening"
+        cursor = self.conn.execute(
+            f"SELECT * FROM {table} WHERE citation_id = ?",
+            (citation_id,),
+        )
+        results = []
+        for row in cursor.fetchall():
+            data = dict(row)
+            results.append(
+                ScreeningResult(
+                    citation_id=data["citation_id"],
+                    decision=ScreeningDecision(data["decision"]),
+                    reasoning=data["reasoning"],
+                    model=data["model"],
+                    reviewer_name=data.get("reviewer_name"),
+                    screened_at=(
+                        datetime.fromisoformat(data["screened_at"]) if data["screened_at"] else datetime.now()
+                    ),
+                    pdf_error=data.get("pdf_error"),
+                )
+            )
+        return results
+
+    # Secondary filtering operations
+    def save_filter_result(
+        self,
+        citation_id: int,
+        passed: bool,
+        reason: str | None = None,
+        details: str | None = None,
+    ) -> None:
+        """Save a secondary filter result."""
+        self.conn.execute(
+            """INSERT INTO secondary_filters (citation_id, passed, reason, details)
+               VALUES (?, ?, ?, ?)""",
+            (citation_id, passed, reason, details),
+        )
+        self.conn.commit()
+
+    def get_filter_results(self, citation_id: int) -> list[dict]:
+        """Get all filter results for a citation."""
+        cursor = self.conn.execute(
+            "SELECT * FROM secondary_filters WHERE citation_id = ?",
+            (citation_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_filtered_citations(self, review_id: int, passed: bool = True) -> list[Citation]:
+        """Get citations that passed or failed secondary filtering."""
+        cursor = self.conn.execute(
+            """SELECT DISTINCT c.* FROM citations c
+               JOIN secondary_filters sf ON c.id = sf.citation_id
+               WHERE c.review_id = ? AND sf.passed = ?""",
+            (review_id, passed),
+        )
+        return [self._row_to_citation(row) for row in cursor.fetchall()]
+
+    def get_extracted_citations(self, review_id: int) -> list[Citation]:
+        """Get citations that have been extracted."""
+        cursor = self.conn.execute(
+            """SELECT c.* FROM citations c
+               JOIN extractions e ON c.id = e.citation_id
+               WHERE c.review_id = ?""",
+            (review_id,),
+        )
+        return [self._row_to_citation(row) for row in cursor.fetchall()]
