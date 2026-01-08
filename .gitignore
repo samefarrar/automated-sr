@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Data directory (contains SQLite database and local files)
+.sr_data/
+
+# Environment files
+.env
+.env.local
+.DS_Store
