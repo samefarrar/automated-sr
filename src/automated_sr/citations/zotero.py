@@ -50,6 +50,75 @@ class ZoteroLocalClient:
         except Exception:
             return False
 
+    def get_library_id(self) -> str | None:
+        """Try to get the library ID from local Zotero.
+
+        Returns:
+            Library ID if available, None otherwise.
+        """
+        try:
+            data = self.get_selected_collection()
+            if data:
+                library_id = data.get("libraryID")
+                if library_id is not None:
+                    return str(library_id)
+        except Exception:
+            pass
+        return None
+
+    def get_selected_collection(self) -> dict[str, Any] | None:
+        """Get the currently selected collection and collection tree from Zotero.
+
+        Returns:
+            Dict with collection info and targets, or None if unavailable.
+            Response includes:
+            - libraryID: int
+            - libraryName: str
+            - id: int (selected collection ID)
+            - name: str (selected collection name)
+            - targets: list of available collections with treeViewID (e.g., "C4", "L1")
+        """
+        try:
+            response = self._http.post(
+                f"{self.base_url}/connector/getSelectedCollection",
+                json={},
+                headers={"Content-Type": "application/json"},
+            )
+            if response.status_code == 200:
+                return response.json()
+        except Exception:
+            pass
+        return None
+
+    def find_collection_by_name(self, name: str) -> dict[str, Any] | None:
+        """Find a collection in the Zotero library by name.
+
+        Args:
+            name: The collection name to search for
+
+        Returns:
+            Dict with collection info (id, name, level) or None if not found.
+        """
+        data = self.get_selected_collection()
+        if not data or "targets" not in data:
+            return None
+
+        for target in data["targets"]:
+            if target.get("name") == name:
+                return target
+        return None
+
+    def get_collections(self) -> list[dict[str, Any]]:
+        """Get all collections from the Zotero library.
+
+        Returns:
+            List of collections with their treeViewID, name, and level.
+        """
+        data = self.get_selected_collection()
+        if not data or "targets" not in data:
+            return []
+        return data["targets"]
+
     def _citation_to_zotero_item(self, citation: Citation) -> dict[str, Any]:
         """Convert a Citation to Zotero item format."""
         creators = []
@@ -152,6 +221,105 @@ class ZoteroLocalClient:
 
         logger.info("Saved %d citations to Zotero (%d failed)", successful, failed)
         return successful, failed
+
+    def save_to_collection(
+        self,
+        citations: list[Citation],
+        collection_name: str,
+        library_id: str | None = None,
+    ) -> tuple[str | None, int, int]:
+        """
+        Save citations to a specific Zotero collection using pyzotero local mode.
+
+        This requires either:
+        - library_id parameter, OR
+        - ZOTERO_LIBRARY_ID environment variable, OR
+        - Ability to auto-detect from running Zotero
+
+        Args:
+            citations: List of citations to save
+            collection_name: Name of the collection to create/use
+            library_id: Optional library ID (auto-detected if not provided)
+
+        Returns:
+            Tuple of (collection_key, successful_count, failed_count)
+
+        Raises:
+            ZoteroError: If library_id cannot be determined
+        """
+        import os
+
+        # Try to get library_id
+        if library_id is None:
+            library_id = os.environ.get("ZOTERO_LIBRARY_ID")
+        if library_id is None:
+            library_id = self.get_library_id()
+        if library_id is None:
+            raise ZoteroError(
+                "Cannot determine Zotero library ID. "
+                "Set ZOTERO_LIBRARY_ID environment variable or pass library_id parameter."
+            )
+
+        # Use pyzotero with local mode
+        zot = zotero.Zotero(library_id, "user", local=True)
+
+        # Find or create collection
+        collection_key = None
+        try:
+            collections = cast(list[dict[str, Any]], zot.collections())
+            for coll in collections:
+                if coll.get("data", {}).get("name") == collection_name:
+                    collection_key = coll.get("key")
+                    logger.info("Using existing collection '%s' (%s)", collection_name, collection_key)
+                    break
+
+            if collection_key is None:
+                # Create new collection
+                result = zot.create_collections([{"name": collection_name}])
+                if result and "successful" in result and "0" in result["successful"]:
+                    collection_key = result["successful"]["0"]["key"]
+                    logger.info("Created collection '%s' (%s)", collection_name, collection_key)
+                else:
+                    logger.error("Failed to create collection: %s", result)
+                    return None, 0, len(citations)
+        except Exception:
+            logger.exception("Failed to manage collections")
+            return None, 0, len(citations)
+
+        # Convert citations to Zotero format and add to collection
+        successful = 0
+        failed = 0
+        batch_size = 50
+
+        for i in range(0, len(citations), batch_size):
+            batch = citations[i : i + batch_size]
+            items = []
+
+            for citation in batch:
+                item = self._citation_to_zotero_item(citation)
+                item["collections"] = [collection_key]
+                items.append(item)
+
+            try:
+                result = zot.create_items(items)
+                if result:
+                    batch_successful = len(result.get("successful", {}))
+                    batch_failed = len(result.get("failed", {}))
+                    successful += batch_successful
+                    failed += batch_failed
+                    logger.info("Saved batch of %d items to collection", batch_successful)
+
+                    if result.get("failed"):
+                        for idx, error in result["failed"].items():
+                            logger.warning("Failed to create item %s: %s", idx, error)
+                else:
+                    failed += len(batch)
+            except Exception:
+                logger.exception("Failed to create batch of %d items", len(batch))
+                failed += len(batch)
+
+        logger.info("Saved %d citations to collection '%s' (%d failed)", successful, collection_name, failed)
+        return collection_key, successful, failed
 
 
 class ZoteroClient:

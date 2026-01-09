@@ -797,6 +797,7 @@ def import_pdfs(
 @app.command("export-to-zotero")
 def export_to_zotero(
     review: Annotated[str, typer.Option("--review", "-r", help="Review name")],
+    collection: Annotated[str | None, typer.Option("--collection", "-c", help="Zotero collection name")] = None,
     included_only: Annotated[bool, typer.Option("--included-only", help="Only export included citations")] = False,
     stage: Annotated[str, typer.Option("--stage", "-s", help="Stage to filter by: abstract or fulltext")] = "abstract",
     use_web_api: Annotated[bool, typer.Option("--web-api", help="Use Zotero web API instead of local")] = False,
@@ -804,12 +805,14 @@ def export_to_zotero(
     """Export citations to Zotero for PDF retrieval.
 
     By default, uses the local Zotero API (requires Zotero to be running).
-    Items are added to the currently selected collection in Zotero.
+
+    Use --collection to specify a collection name (creates it if needed).
+    Without --collection, items go to the currently selected collection.
 
     You can then use Zotero's 'Find Available PDFs' feature to retrieve PDFs
     using institutional access.
     """
-    from automated_sr.citations.zotero import ZoteroLocalClient
+    from automated_sr.citations.zotero import ZoteroError, ZoteroLocalClient
 
     db = get_db()
 
@@ -833,9 +836,12 @@ def export_to_zotero(
         db.close()
         return
 
+    # Default collection name if not specified but using web API or collection mode
+    target_collection = collection or f"SR: {review}"
+
     if use_web_api:
         # Use web API (requires API keys)
-        from automated_sr.citations.zotero import ZoteroClient, ZoteroError
+        from automated_sr.citations.zotero import ZoteroClient
         from automated_sr.config import get_zotero_config
 
         try:
@@ -852,7 +858,6 @@ def export_to_zotero(
             console.print("[red]Failed to connect to Zotero web API.[/red]")
             raise typer.Exit(1)
 
-        target_collection = f"SR: {review}"
         console.print(f"Creating collection: [bold]{target_collection}[/bold]")
 
         with Progress(
@@ -880,22 +885,73 @@ def export_to_zotero(
             raise typer.Exit(1)
 
         console.print("[green]Connected to local Zotero instance[/green]")
-        console.print("[dim]Items will be added to the currently selected collection in Zotero[/dim]")
-        console.print()
 
-        with Progress(
-            SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console
-        ) as progress:
-            progress.add_task("Exporting to Zotero...", total=None)
-            successful, failed = local_client.save_citations(citations)
+        if collection:
+            # Check if collection exists in Zotero
+            existing = local_client.find_collection_by_name(target_collection)
 
-        local_client.close()
+            if existing:
+                # Collection exists - check if it's currently selected
+                selected = local_client.get_selected_collection()
+                if selected and selected.get("name") == target_collection:
+                    console.print(f"[green]Collection '{target_collection}' is selected[/green]")
+                else:
+                    console.print(f"\n[yellow]Collection '{target_collection}' exists but is not selected.[/yellow]")
+                    console.print("Please select it in Zotero, then run this command again.\n")
+                    console.print("[dim]In Zotero: Click on the collection in the left panel[/dim]")
+                    local_client.close()
+                    raise typer.Exit(1)
 
-        if successful > 0:
-            console.print("\n[bold green]Export Complete![/bold green]")
-            console.print(f"  Items created: {successful}")
-            if failed:
-                console.print(f"  [yellow]Failed: {failed}[/yellow]")
+                # Save to currently selected collection
+                with Progress(
+                    SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console
+                ) as progress:
+                    progress.add_task("Exporting to Zotero...", total=None)
+                    successful, failed = local_client.save_citations(citations)
+
+                local_client.close()
+
+                console.print("\n[bold green]Export Complete![/bold green]")
+                console.print(f"  Collection: {target_collection}")
+                console.print(f"  Items created: {successful}")
+                if failed:
+                    console.print(f"  [yellow]Failed: {failed}[/yellow]")
+            else:
+                # Collection doesn't exist - provide guidance
+                console.print(f"\n[yellow]Collection '{target_collection}' not found.[/yellow]")
+                console.print("\nThe Zotero local API doesn't support creating collections.")
+                console.print("You have two options:\n")
+                console.print("[bold]Option 1:[/bold] Create the collection manually in Zotero")
+                console.print("  1. In Zotero, right-click 'My Library' > New Collection")
+                console.print(f"  2. Name it '{target_collection}'")
+                console.print("  3. Select the new collection")
+                console.print("  4. Run this command again\n")
+                console.print("[bold]Option 2:[/bold] Use the Zotero web API (supports collection creation)")
+                console.print("  1. Get your API key from https://www.zotero.org/settings/keys")
+                console.print("  2. Set environment variables:")
+                console.print("     export ZOTERO_LIBRARY_ID=<your-user-id>")
+                console.print("     export ZOTERO_API_KEY=<your-api-key>")
+                console.print(f'  3. Run: sr export-to-zotero -r {review} -c "{target_collection}" --web-api')
+                local_client.close()
+                raise typer.Exit(1)
+        else:
+            # Simple connector mode - items go to selected collection
+            console.print("[dim]Items will be added to the currently selected collection in Zotero[/dim]")
+            console.print()
+
+            with Progress(
+                SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console
+            ) as progress:
+                progress.add_task("Exporting to Zotero...", total=None)
+                successful, failed = local_client.save_citations(citations)
+
+            local_client.close()
+
+            if successful > 0:
+                console.print("\n[bold green]Export Complete![/bold green]")
+                console.print(f"  Items created: {successful}")
+                if failed:
+                    console.print(f"  [yellow]Failed: {failed}[/yellow]")
 
     console.print("\n[bold]Next steps:[/bold]")
     console.print("  1. In Zotero, select all items (Ctrl/Cmd+A)")
