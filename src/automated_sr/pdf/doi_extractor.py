@@ -75,7 +75,7 @@ def extract_doi_regex(text: str) -> str | None:
     if match:
         doi = match.group(0)
         # Clean up trailing punctuation that might have been captured
-        doi = doi.rstrip(".,;:")
+        doi = doi.rstrip(".,;:)]}")
         return doi
     return None
 

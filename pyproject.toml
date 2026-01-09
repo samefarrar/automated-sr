@@ -21,6 +21,7 @@ dependencies = [
     "numpy>=1.24.0",
     "scipy>=1.10.0",
     "matplotlib>=3.7.0",
+    "anthropic>=0.75.0",
 ]
 
 [project.scripts]
@@ -47,4 +48,11 @@ typeCheckingMode = "standard"
 [dependency-groups]
 dev = [
     "pyright>=1.1.408",
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.8.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
