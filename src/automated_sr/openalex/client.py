@@ -156,6 +156,32 @@ class OpenAlexClient:
         logger.info("Found %d of %d DOIs", len(results), len(dois))
         return results
 
+    def _reconstruct_abstract(self, abstract_inverted_index: dict[str, list[int]] | None) -> str | None:
+        """
+        Reconstruct abstract text from OpenAlex inverted index format.
+
+        OpenAlex stores abstracts as {word: [positions]} to save space.
+        This reconstructs the original text.
+
+        Args:
+            abstract_inverted_index: The inverted index dictionary
+
+        Returns:
+            Reconstructed abstract text, or None if not available
+        """
+        if not abstract_inverted_index:
+            return None
+
+        # Build list of (position, word) tuples
+        word_positions: list[tuple[int, str]] = []
+        for word, positions in abstract_inverted_index.items():
+            for pos in positions:
+                word_positions.append((pos, word))
+
+        # Sort by position and join
+        word_positions.sort(key=lambda x: x[0])
+        return " ".join(word for _, word in word_positions)
+
     def to_citation(self, work: dict[str, Any]) -> Citation:
         """
         Convert an OpenAlex work to a Citation object.
@@ -187,12 +213,17 @@ class OpenAlexClient:
             if source:
                 journal = source.get("display_name")
 
+        # Get abstract - try direct field first, then inverted index
+        abstract = work.get("abstract")
+        if not abstract:
+            abstract = self._reconstruct_abstract(work.get("abstract_inverted_index"))
+
         return Citation(
             source="openalex",
             source_key=work.get("id"),
             title=work.get("title", ""),
             authors=authors,
-            abstract=work.get("abstract"),
+            abstract=abstract,
             year=work.get("publication_year"),
             doi=doi,
             journal=journal,

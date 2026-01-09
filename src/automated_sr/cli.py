@@ -665,6 +665,137 @@ def fetch_pdfs(
     db.close()
 
 
+@app.command("import-pdfs")
+def import_pdfs(
+    review: Annotated[str, typer.Option("--review", "-r", help="Review name")],
+    directory: Annotated[Path, typer.Option("--dir", "-d", help="Directory containing PDF files")],
+    use_llm: Annotated[bool, typer.Option("--llm/--no-llm", help="Use LLM for DOI extraction (default: yes)")] = True,
+    copy_files: Annotated[bool, typer.Option("--copy/--no-copy", help="Copy files to review PDF dir")] = True,
+) -> None:
+    """Import manually downloaded PDFs by extracting DOI and matching to citations."""
+    from shutil import copy2
+
+    from automated_sr.pdf.doi_extractor import extract_doi_from_pdf, normalize_doi
+
+    db = get_db()
+    config = get_config()
+
+    review_data = db.get_review_by_name(review)
+    if not review_data:
+        console.print(f"[red]Error:[/red] Review '{review}' not found")
+        raise typer.Exit(1)
+
+    review_id = review_data["id"]
+
+    # Get all citations with DOIs
+    citations = db.get_citations(review_id)
+    citations_with_doi = [c for c in citations if c.doi]
+
+    if not citations_with_doi:
+        console.print("[yellow]No citations with DOIs found in this review.[/yellow]")
+        db.close()
+        return
+
+    # Build DOI lookup map
+    doi_to_citation: dict[str, int] = {}
+    for c in citations_with_doi:
+        if c.doi and c.id:
+            doi_to_citation[normalize_doi(c.doi)] = c.id
+
+    console.print(f"[blue]Scanning {directory} for PDFs to import...[/blue]")
+    console.print(f"Matching against {len(doi_to_citation)} citations with DOIs")
+    if use_llm:
+        console.print("Using LLM (Claude Haiku) for DOI extraction if regex fails")
+
+    # Find all PDF files
+    pdf_files = list(directory.glob("**/*.pdf"))
+    if not pdf_files:
+        console.print(f"[yellow]No PDF files found in {directory}[/yellow]")
+        db.close()
+        return
+
+    console.print(f"Found {len(pdf_files)} PDF files\n")
+
+    # Prepare target directory
+    pdf_dir = config.data_dir / "pdfs"
+    pdf_dir.mkdir(parents=True, exist_ok=True)
+
+    matched = 0
+    unmatched = 0
+    already_have = 0
+    errors = 0
+
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
+        task = progress.add_task("Extracting DOIs and matching...", total=len(pdf_files))
+
+        for pdf_path in pdf_files:
+            progress.update(task, description=f"Processing {pdf_path.name[:40]}...")
+
+            try:
+                doi = extract_doi_from_pdf(pdf_path, use_llm=use_llm)
+
+                if not doi:
+                    console.print(f"  [yellow]No DOI found:[/yellow] {pdf_path.name}")
+                    unmatched += 1
+                    progress.advance(task)
+                    continue
+
+                normalized = normalize_doi(doi)
+                citation_id = doi_to_citation.get(normalized)
+
+                if not citation_id:
+                    console.print(f"  [yellow]DOI not in review:[/yellow] {doi} ({pdf_path.name})")
+                    unmatched += 1
+                    progress.advance(task)
+                    continue
+
+                # Check if citation already has a PDF
+                existing = db.conn.execute(
+                    "SELECT pdf_path FROM citations WHERE id = ?", (citation_id,)
+                ).fetchone()
+                if existing and existing[0]:
+                    existing_path = Path(existing[0])
+                    if existing_path.exists():
+                        console.print(f"  [dim]Already have PDF:[/dim] {doi}")
+                        already_have += 1
+                        progress.advance(task)
+                        continue
+
+                # Copy or reference the file
+                if copy_files:
+                    safe_doi = doi.replace("/", "_")
+                    target_path = pdf_dir / f"{citation_id}_{safe_doi}.pdf"
+                    copy2(pdf_path, target_path)
+                    final_path = target_path
+                else:
+                    final_path = pdf_path.resolve()
+
+                # Update database
+                db.conn.execute(
+                    "UPDATE citations SET pdf_path = ? WHERE id = ?",
+                    (str(final_path), citation_id),
+                )
+                db.conn.commit()
+
+                matched += 1
+                console.print(f"  [green]Matched:[/green] {doi} -> citation {citation_id}")
+
+            except Exception as e:
+                console.print(f"  [red]Error processing {pdf_path.name}:[/red] {e}")
+                errors += 1
+
+            progress.advance(task)
+
+    console.print("\n[bold]PDF Import Complete[/bold]")
+    console.print(f"  Matched and imported: {matched}")
+    console.print(f"  Already had PDF: {already_have}")
+    console.print(f"  No match found: {unmatched}")
+    if errors:
+        console.print(f"  Errors: {errors}")
+
+    db.close()
+
+
 @app.command("screen-multi")
 def screen_multi(
     review: Annotated[str, typer.Option("--review", "-r", help="Review name")],
