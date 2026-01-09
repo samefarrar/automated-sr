@@ -119,11 +119,48 @@ class ZoteroLocalClient:
             return []
         return data["targets"]
 
+    def _get_local_library_id(self) -> str:
+        """Get the library ID for local Zotero API access.
+
+        Tries in order:
+        1. ZOTERO_LIBRARY_ID environment variable
+        2. User ID 0 (special "current user" value for local API)
+        3. Extract from error message if 0 doesn't work
+
+        Returns:
+            Library ID string that works with local API
+        """
+        import os
+        import re
+
+        # Check environment first
+        env_id = os.environ.get("ZOTERO_LIBRARY_ID")
+        if env_id:
+            return env_id
+
+        # Try user ID 0 first (special value for "current user" in local mode)
+        # If that fails, the error message tells us the correct ID
+        try:
+            test_zot = zotero.Zotero("0", "user", local=True)
+            test_zot.top(limit=1)
+            return "0"
+        except Exception as e:
+            error_msg = str(e)
+            # Error message format: "use userID 0 or 11007483"
+            match = re.search(r"use userID 0 or (\d+)", error_msg)
+            if match:
+                user_id = match.group(1)
+                logger.info("Auto-detected Zotero user ID: %s", user_id)
+                return user_id
+
+        # Fallback to 0
+        return "0"
+
     def get_items_with_pdfs(self, library_id: str | None = None) -> list[dict[str, Any]]:
         """Get items from the currently selected collection with their PDF paths.
 
         Uses pyzotero local mode to query items and their attachments.
-        Requires library_id (from env or auto-detected).
+        Library ID is auto-detected if not provided.
 
         Args:
             library_id: Optional library ID (auto-detected if not provided)
@@ -131,15 +168,9 @@ class ZoteroLocalClient:
         Returns:
             List of dicts with 'doi', 'title', 'pdf_path', 'zotero_key'
         """
-        import os
-
-        # Get library_id
+        # Get library_id (auto-detect if not provided)
         if library_id is None:
-            library_id = os.environ.get("ZOTERO_LIBRARY_ID")
-        if library_id is None:
-            library_id = self.get_library_id()
-        if library_id is None:
-            raise ZoteroError("Cannot determine Zotero library ID. Set ZOTERO_LIBRARY_ID environment variable.")
+            library_id = self._get_local_library_id()
 
         # Get selected collection info
         selected = self.get_selected_collection()
@@ -340,10 +371,8 @@ class ZoteroLocalClient:
         """
         Save citations to a specific Zotero collection using pyzotero local mode.
 
-        This requires either:
-        - library_id parameter, OR
-        - ZOTERO_LIBRARY_ID environment variable, OR
-        - Ability to auto-detect from running Zotero
+        Note: The local API is read-only for write operations like creating collections.
+        This method will fail if the collection doesn't exist.
 
         Args:
             citations: List of citations to save
@@ -354,20 +383,11 @@ class ZoteroLocalClient:
             Tuple of (collection_key, successful_count, failed_count)
 
         Raises:
-            ZoteroError: If library_id cannot be determined
+            ZoteroError: If collection creation fails (local API limitation)
         """
-        import os
-
-        # Try to get library_id
+        # Get library_id (auto-detect if not provided)
         if library_id is None:
-            library_id = os.environ.get("ZOTERO_LIBRARY_ID")
-        if library_id is None:
-            library_id = self.get_library_id()
-        if library_id is None:
-            raise ZoteroError(
-                "Cannot determine Zotero library ID. "
-                "Set ZOTERO_LIBRARY_ID environment variable or pass library_id parameter."
-            )
+            library_id = self._get_local_library_id()
 
         # Use pyzotero with local mode
         zot = zotero.Zotero(library_id, "user", local=True)

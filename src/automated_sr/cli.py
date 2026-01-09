@@ -868,8 +868,6 @@ def link_zotero_pdfs(
             zotero_items = local_client.get_items_with_pdfs()
     except ZoteroError as e:
         console.print(f"[red]Error:[/red] {e}")
-        console.print("\nMake sure ZOTERO_LIBRARY_ID is set.")
-        console.print("You can find it at: https://www.zotero.org/settings/keys")
         local_client.close()
         raise typer.Exit(1) from None
 
