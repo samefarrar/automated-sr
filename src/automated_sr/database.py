@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS abstract_screening (
     reasoning TEXT,
     model TEXT,
     reviewer_name TEXT,
-    screened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    screened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(citation_id, reviewer_name)
 );
 
 -- Full-text screening results (with reviewer_name for multi-reviewer support)
@@ -63,13 +64,14 @@ CREATE TABLE IF NOT EXISTS fulltext_screening (
     pdf_error TEXT,
     model TEXT,
     reviewer_name TEXT,
-    screened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    screened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(citation_id, reviewer_name)
 );
 
 -- Extraction results
 CREATE TABLE IF NOT EXISTS extractions (
     id INTEGER PRIMARY KEY,
-    citation_id INTEGER REFERENCES citations(id),
+    citation_id INTEGER UNIQUE REFERENCES citations(id),
     extracted_data TEXT,
     model TEXT,
     extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -82,7 +84,8 @@ CREATE TABLE IF NOT EXISTS screening_consensus (
     stage TEXT CHECK(stage IN ('abstract', 'fulltext')),
     consensus_decision TEXT CHECK(consensus_decision IN ('include', 'exclude', 'uncertain')),
     required_tiebreaker BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(citation_id, stage)
 );
 
 -- Secondary filtering results
@@ -140,6 +143,8 @@ class Database:
         self._add_column_if_missing("abstract_screening", "reviewer_name", "TEXT")
         # Add reviewer_name column to fulltext_screening if missing
         self._add_column_if_missing("fulltext_screening", "reviewer_name", "TEXT")
+        # Add unique indexes to prevent duplicates (for existing databases)
+        self._add_unique_indexes()
 
     def _add_column_if_missing(self, table: str, column: str, col_type: str) -> None:
         """Add a column to a table if it doesn't exist."""
@@ -148,6 +153,40 @@ class Database:
         if column not in columns:
             self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
             logger.info("Added column %s to table %s", column, table)
+
+    def _add_unique_indexes(self) -> None:
+        """Add unique indexes to prevent duplicates (for existing databases without constraints)."""
+        # Remove duplicates first, keeping the most recent record
+        self._remove_duplicates("abstract_screening", ["citation_id", "reviewer_name"])
+        self._remove_duplicates("fulltext_screening", ["citation_id", "reviewer_name"])
+        self._remove_duplicates("extractions", ["citation_id"])
+        self._remove_duplicates("screening_consensus", ["citation_id", "stage"])
+
+        # Create unique indexes if they don't exist
+        indexes = [
+            ("idx_abstract_screening_unique", "abstract_screening", "citation_id, reviewer_name"),
+            ("idx_fulltext_screening_unique", "fulltext_screening", "citation_id, reviewer_name"),
+            ("idx_extractions_unique", "extractions", "citation_id"),
+            ("idx_screening_consensus_unique", "screening_consensus", "citation_id, stage"),
+        ]
+        for idx_name, table, columns in indexes:
+            try:
+                self.conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {idx_name} ON {table}({columns})")
+            except sqlite3.IntegrityError:
+                # Index might already exist or duplicates remain
+                logger.warning("Could not create unique index %s - duplicates may exist", idx_name)
+
+    def _remove_duplicates(self, table: str, unique_columns: list[str]) -> None:
+        """Remove duplicate rows from a table, keeping the most recent."""
+        import contextlib
+
+        cols = ", ".join(unique_columns)
+        with contextlib.suppress(sqlite3.OperationalError):
+            self.conn.execute(f"""
+                DELETE FROM {table} WHERE rowid NOT IN (
+                    SELECT MAX(rowid) FROM {table} GROUP BY {cols}
+                )
+            """)
 
     def close(self) -> None:
         """Close the database connection."""
@@ -287,9 +326,10 @@ class Database:
         return [self._row_to_citation(row) for row in cursor.fetchall()]
 
     def save_abstract_screening(self, result: ScreeningResult) -> None:
-        """Save an abstract screening result."""
+        """Save an abstract screening result (updates if already exists)."""
         self.conn.execute(
-            """INSERT INTO abstract_screening (citation_id, decision, reasoning, model, reviewer_name, screened_at)
+            """INSERT OR REPLACE INTO abstract_screening
+               (citation_id, decision, reasoning, model, reviewer_name, screened_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 result.citation_id,
@@ -363,9 +403,9 @@ class Database:
         return results
 
     def save_fulltext_screening(self, result: ScreeningResult) -> None:
-        """Save a full-text screening result."""
+        """Save a full-text screening result (updates if already exists)."""
         self.conn.execute(
-            """INSERT INTO fulltext_screening
+            """INSERT OR REPLACE INTO fulltext_screening
                (citation_id, decision, reasoning, pdf_error, model, reviewer_name, screened_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
@@ -419,9 +459,9 @@ class Database:
         return [self._row_to_citation(row) for row in cursor.fetchall()]
 
     def save_extraction(self, result: ExtractionResult) -> None:
-        """Save an extraction result."""
+        """Save an extraction result (updates if already exists)."""
         self.conn.execute(
-            """INSERT INTO extractions (citation_id, extracted_data, model, extracted_at)
+            """INSERT OR REPLACE INTO extractions (citation_id, extracted_data, model, extracted_at)
                VALUES (?, ?, ?, ?)""",
             (result.citation_id, json.dumps(result.extracted_data), result.model, result.extracted_at),
         )
@@ -532,9 +572,9 @@ class Database:
         consensus_decision: ScreeningDecision,
         required_tiebreaker: bool = False,
     ) -> int:
-        """Save a screening consensus result."""
+        """Save a screening consensus result (updates if already exists)."""
         cursor = self.conn.execute(
-            """INSERT INTO screening_consensus
+            """INSERT OR REPLACE INTO screening_consensus
                (citation_id, stage, consensus_decision, required_tiebreaker)
                VALUES (?, ?, ?, ?)""",
             (citation_id, stage, consensus_decision.value, required_tiebreaker),

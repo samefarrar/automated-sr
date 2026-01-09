@@ -81,9 +81,6 @@ class LLMClient:
         """
         Send a completion request with an attached document.
 
-        For providers that don't support native document processing,
-        this will raise NotImplementedError.
-
         Args:
             prompt: The user prompt to send
             document_base64: Base64-encoded document content
@@ -96,16 +93,17 @@ class LLMClient:
         """
         logger.debug("LiteLLM document completion: model=%s, doc_type=%s", model, document_type)
 
-        # Use vision/multimodal format for document
-        # This works for Claude models which support PDF documents
+        # Use LiteLLM's file format for document processing
+        # See: https://docs.litellm.ai/docs/completion/document_understanding
         content = [
+            {"type": "text", "text": prompt},
             {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:{document_type};base64,{document_base64}",
+                "type": "file",
+                "file": {
+                    "file_data": f"data:{document_type};base64,{document_base64}",
+                    "format": document_type,
                 },
             },
-            {"type": "text", "text": prompt},
         ]
 
         kwargs: dict = {
