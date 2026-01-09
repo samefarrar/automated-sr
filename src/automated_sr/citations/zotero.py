@@ -119,6 +119,115 @@ class ZoteroLocalClient:
             return []
         return data["targets"]
 
+    def get_items_with_pdfs(self, library_id: str | None = None) -> list[dict[str, Any]]:
+        """Get items from the currently selected collection with their PDF paths.
+
+        Uses pyzotero local mode to query items and their attachments.
+        Requires library_id (from env or auto-detected).
+
+        Args:
+            library_id: Optional library ID (auto-detected if not provided)
+
+        Returns:
+            List of dicts with 'doi', 'title', 'pdf_path', 'zotero_key'
+        """
+        import os
+
+        # Get library_id
+        if library_id is None:
+            library_id = os.environ.get("ZOTERO_LIBRARY_ID")
+        if library_id is None:
+            library_id = self.get_library_id()
+        if library_id is None:
+            raise ZoteroError("Cannot determine Zotero library ID. Set ZOTERO_LIBRARY_ID environment variable.")
+
+        # Get selected collection info
+        selected = self.get_selected_collection()
+        if not selected:
+            raise ZoteroError("Cannot get selected collection from Zotero")
+
+        collection_id = selected.get("id")
+        collection_name = selected.get("name")
+        logger.info("Getting items from collection '%s' (id=%s)", collection_name, collection_id)
+
+        # Use pyzotero local mode
+        zot = zotero.Zotero(library_id, "user", local=True)
+
+        results = []
+        try:
+            # Get items from collection
+            if collection_id:
+                items = cast(list[dict[str, Any]], zot.collection_items(collection_id, limit=500))
+            else:
+                items = cast(list[dict[str, Any]], zot.top(limit=500))
+
+            for item in items:
+                data = item.get("data", {})
+                item_type = data.get("itemType")
+
+                # Skip attachments and notes
+                if item_type in ("attachment", "note"):
+                    continue
+
+                doi = data.get("DOI")
+                title = data.get("title")
+                item_key = item.get("key")
+
+                if not item_key:
+                    continue
+
+                # Get PDF attachment
+                pdf_path = self._get_pdf_for_item(zot, item_key)
+
+                results.append(
+                    {
+                        "doi": doi,
+                        "title": title,
+                        "pdf_path": pdf_path,
+                        "zotero_key": item_key,
+                    }
+                )
+
+            logger.info("Found %d items, %d with PDFs", len(results), sum(1 for r in results if r["pdf_path"]))
+            return results
+
+        except Exception:
+            logger.exception("Failed to get items from Zotero")
+            raise ZoteroError("Failed to query Zotero library") from None
+
+    def _get_pdf_for_item(self, zot: "zotero.Zotero", item_key: str) -> Path | None:
+        """Get PDF path for a Zotero item using pyzotero."""
+        try:
+            children = cast(list[dict[str, Any]], zot.children(item_key))
+
+            for child in children:
+                data = child.get("data", {})
+                if data.get("contentType") == "application/pdf":
+                    # For linked files
+                    if data.get("linkMode") == "linked_file":
+                        path_str = data.get("path")
+                        if path_str:
+                            path = Path(path_str)
+                            if path.exists():
+                                return path
+                    # For stored files
+                    else:
+                        attachment_key = child.get("key")
+                        if attachment_key:
+                            # Find in Zotero storage
+                            possible_dirs = [
+                                Path.home() / "Zotero" / "storage" / attachment_key,
+                                Path.home() / "Library" / "Application Support" / "Zotero" / "storage" / attachment_key,
+                            ]
+                            for storage_dir in possible_dirs:
+                                if storage_dir.exists():
+                                    for file in storage_dir.iterdir():
+                                        if file.suffix.lower() == ".pdf":
+                                            return file
+            return None
+        except Exception:
+            return None
+
     def _citation_to_zotero_item(self, citation: Citation) -> dict[str, Any]:
         """Convert a Citation to Zotero item format."""
         creators = []

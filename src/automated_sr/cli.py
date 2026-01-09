@@ -794,6 +794,136 @@ def import_pdfs(
     db.close()
 
 
+@app.command("link-zotero-pdfs")
+def link_zotero_pdfs(
+    review: Annotated[str, typer.Option("--review", "-r", help="Review name")],
+    collection: Annotated[str, typer.Option("--collection", "-c", help="Zotero collection name to read from")],
+) -> None:
+    """Link PDFs from a Zotero collection to citations by matching DOIs.
+
+    This is more efficient than import-pdfs as it queries Zotero directly
+    for items with their PDF attachments rather than scanning all PDFs.
+
+    Workflow:
+    1. Select the collection in Zotero that contains your items with PDFs
+    2. Run this command to link the PDFs to your review citations
+    """
+    from automated_sr.citations.zotero import ZoteroError, ZoteroLocalClient
+    from automated_sr.pdf.doi_extractor import normalize_doi
+
+    db = get_db()
+
+    review_data = db.get_review_by_name(review)
+    if not review_data:
+        console.print(f"[red]Error:[/red] Review '{review}' not found")
+        raise typer.Exit(1)
+
+    review_id = review_data["id"]
+
+    # Get citations with DOIs
+    citations = db.get_citations(review_id)
+    citations_with_doi = [c for c in citations if c.doi]
+
+    if not citations_with_doi:
+        console.print("[yellow]No citations with DOIs found in this review.[/yellow]")
+        db.close()
+        return
+
+    # Build DOI lookup map
+    doi_to_citation: dict[str, int] = {}
+    for c in citations_with_doi:
+        if c.doi and c.id:
+            doi_to_citation[normalize_doi(c.doi)] = c.id
+
+    console.print(f"[blue]Matching against {len(doi_to_citation)} citations with DOIs[/blue]")
+
+    # Connect to Zotero
+    local_client = ZoteroLocalClient()
+
+    if not local_client.is_running():
+        console.print("[red]Zotero is not running.[/red]")
+        raise typer.Exit(1)
+
+    # Check collection is selected
+    existing = local_client.find_collection_by_name(collection)
+    if not existing:
+        console.print(f"[red]Collection '{collection}' not found in Zotero.[/red]")
+        local_client.close()
+        raise typer.Exit(1)
+
+    selected = local_client.get_selected_collection()
+    if not selected or selected.get("name") != collection:
+        console.print(f"[yellow]Please select the '{collection}' collection in Zotero first.[/yellow]")
+        local_client.close()
+        raise typer.Exit(1)
+
+    console.print(f"[green]Reading from Zotero collection: {collection}[/green]")
+
+    # Get items with PDFs from Zotero
+    try:
+        with Progress(
+            SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console
+        ) as progress:
+            progress.add_task("Querying Zotero for items with PDFs...", total=None)
+            zotero_items = local_client.get_items_with_pdfs()
+    except ZoteroError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        console.print("\nMake sure ZOTERO_LIBRARY_ID is set.")
+        console.print("You can find it at: https://www.zotero.org/settings/keys")
+        local_client.close()
+        raise typer.Exit(1) from None
+
+    local_client.close()
+
+    # Match and link
+    matched = 0
+    no_pdf = 0
+    no_doi = 0
+    not_in_review = 0
+
+    for item in zotero_items:
+        doi = item.get("doi")
+        pdf_path = item.get("pdf_path")
+        title = item.get("title", "Unknown")[:50]
+
+        if not doi:
+            no_doi += 1
+            continue
+
+        normalized = normalize_doi(doi)
+        citation_id = doi_to_citation.get(normalized)
+
+        if not citation_id:
+            not_in_review += 1
+            continue
+
+        if not pdf_path:
+            no_pdf += 1
+            console.print(f"  [yellow]No PDF:[/yellow] {title}...")
+            continue
+
+        # Update database with PDF path
+        db.conn.execute(
+            "UPDATE citations SET pdf_path = ? WHERE id = ?",
+            (str(pdf_path), citation_id),
+        )
+        db.conn.commit()
+
+        matched += 1
+        console.print(f"  [green]Linked:[/green] {title}...")
+
+    console.print("\n[bold]PDF Linking Complete[/bold]")
+    console.print(f"  Successfully linked: {matched}")
+    console.print(f"  No PDF in Zotero: {no_pdf}")
+    console.print(f"  No DOI on item: {no_doi}")
+    console.print(f"  Not in review: {not_in_review}")
+
+    if no_pdf > 0:
+        console.print("\n[dim]Tip: Use 'Find Available PDFs' in Zotero to download missing PDFs[/dim]")
+
+    db.close()
+
+
 @app.command("export-to-zotero")
 def export_to_zotero(
     review: Annotated[str, typer.Option("--review", "-r", help="Review name")],
