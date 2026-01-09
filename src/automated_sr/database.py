@@ -329,15 +329,38 @@ class Database:
 
     # Full-text screening operations
     def get_unscreened_fulltext(self, review_id: int) -> list[Citation]:
-        """Get citations that passed abstract screening but haven't been full-text screened."""
+        """Get citations that passed abstract screening but haven't been full-text screened.
+
+        Checks screening_consensus table first (for multi-reviewer mode),
+        falls back to abstract_screening (for single-reviewer mode).
+        """
+        # First try screening_consensus (multi-reviewer mode)
         cursor = self.conn.execute(
             """SELECT c.* FROM citations c
-               JOIN abstract_screening a ON c.id = a.citation_id
-               LEFT JOIN fulltext_screening f ON c.id = f.citation_id
-               WHERE c.review_id = ? AND a.decision = 'include' AND f.id IS NULL""",
+               JOIN screening_consensus sc ON c.id = sc.citation_id
+               LEFT JOIN screening_consensus ft ON c.id = ft.citation_id AND ft.stage = 'fulltext'
+               WHERE c.review_id = ? AND sc.stage = 'abstract' AND sc.consensus_decision = 'include'
+               AND ft.id IS NULL""",
             (review_id,),
         )
-        return [self._row_to_citation(row) for row in cursor.fetchall()]
+        results = [self._row_to_citation(row) for row in cursor.fetchall()]
+
+        # If no consensus records, fall back to abstract_screening (single-reviewer mode)
+        if not results:
+            cursor = self.conn.execute(
+                """SELECT c.* FROM citations c
+                   JOIN abstract_screening a ON c.id = a.citation_id
+                   LEFT JOIN fulltext_screening f ON c.id = f.citation_id
+                   WHERE c.review_id = ? AND a.decision = 'include' AND f.id IS NULL
+                   AND NOT EXISTS (
+                       SELECT 1 FROM screening_consensus
+                       WHERE citation_id = c.id AND stage = 'abstract'
+                   )""",
+                (review_id,),
+            )
+            results = [self._row_to_citation(row) for row in cursor.fetchall()]
+
+        return results
 
     def save_fulltext_screening(self, result: ScreeningResult) -> None:
         """Save a full-text screening result."""
