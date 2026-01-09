@@ -1,11 +1,10 @@
-"""Full-text screening agent using Claude with PDF processing."""
+"""Full-text screening agent using LiteLLM for multi-provider support."""
 
 import logging
 from datetime import datetime
 
-import anthropic
-
 from automated_sr.config import get_config
+from automated_sr.llm import LLMClient, create_client
 from automated_sr.models import Citation, ReviewProtocol, ScreeningDecision, ScreeningResult
 from automated_sr.pdf.processor import PDFError, PDFProcessor
 
@@ -95,7 +94,7 @@ DECISION: [INCLUDE/EXCLUDE/UNCERTAIN]"""
 
 
 class FullTextScreener:
-    """Screens citations at the full-text level using Claude with PDF processing."""
+    """Screens citations at the full-text level using LiteLLM with PDF processing."""
 
     def __init__(self, protocol: ReviewProtocol, model: str | None = None) -> None:
         """
@@ -103,23 +102,18 @@ class FullTextScreener:
 
         Args:
             protocol: The review protocol with objectives and criteria
-            model: Claude model to use (defaults to protocol or config setting)
+            model: Model to use (defaults to protocol or config setting)
         """
         self.protocol = protocol
-        raw_model = model or protocol.model or get_config().default_model
-        # Strip provider prefix if present (e.g., "anthropic/claude-..." -> "claude-...")
-        self.model = raw_model.split("/")[-1] if "/" in raw_model else raw_model
+        self.model = model or protocol.model or get_config().default_model
         self.pdf_processor = PDFProcessor()
-        self._client: anthropic.Anthropic | None = None
+        self._client: LLMClient | None = None
 
     @property
-    def client(self) -> anthropic.Anthropic:
-        """Get the Anthropic client."""
+    def client(self) -> LLMClient:
+        """Get the LLM client."""
         if self._client is None:
-            config = get_config()
-            if not config.anthropic_api_key:
-                raise ValueError("ANTHROPIC_API_KEY environment variable is required")
-            self._client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+            self._client = create_client()
         return self._client
 
     def _format_criteria(self, criteria: list[str]) -> str:
@@ -205,37 +199,24 @@ class FullTextScreener:
             content, content_type = self.pdf_processor.prepare_for_claude(citation.pdf_path)
 
             if content_type == "document":
-                # Use Claude's document processing
-                message = self.client.messages.create(
+                # Use LiteLLM's document processing
+                prompt = self._build_system_prompt(citation)
+                response_text = self.client.complete_with_document(
+                    prompt=prompt,
+                    document_base64=content,
                     model=self.model,
+                    document_type="application/pdf",
                     max_tokens=2048,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "document",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": "application/pdf",
-                                        "data": content,
-                                    },
-                                },
-                                {"type": "text", "text": self._build_system_prompt(citation)},
-                            ],
-                        }
-                    ],
                 )
             else:
                 # Use text-based screening
                 prompt = self._build_text_prompt(citation, content)
-                message = self.client.messages.create(
+                response_text = self.client.complete(
+                    prompt=prompt,
                     model=self.model,
                     max_tokens=2048,
-                    messages=[{"role": "user", "content": prompt}],
                 )
 
-            response_text = message.content[0].text  # type: ignore[union-attr]
             decision, reasoning = self._parse_response(response_text)
 
             logger.info("Citation %d full-text: %s", citation.id, decision.value)
@@ -259,7 +240,7 @@ class FullTextScreener:
                 pdf_error=str(e),
             )
 
-        except anthropic.APIError:
+        except Exception:
             logger.exception("API error screening citation %d", citation.id)
             return ScreeningResult(
                 citation_id=citation.id,

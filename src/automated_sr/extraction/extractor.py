@@ -1,13 +1,12 @@
-"""Data extraction agent using Claude."""
+"""Data extraction agent using LiteLLM for multi-provider support."""
 
 import json
 import logging
 from datetime import datetime
 from typing import Any
 
-import anthropic
-
 from automated_sr.config import get_config
+from automated_sr.llm import LLMClient, create_client
 from automated_sr.models import Citation, ExtractionResult, ExtractionVariable, ReviewProtocol
 from automated_sr.pdf.processor import PDFError, PDFProcessor
 
@@ -87,7 +86,7 @@ IMPORTANT: Respond ONLY with the JSON object, no additional text."""
 
 
 class DataExtractor:
-    """Extracts structured data from articles using Claude."""
+    """Extracts structured data from articles using LiteLLM."""
 
     def __init__(self, protocol: ReviewProtocol, model: str | None = None) -> None:
         """
@@ -95,23 +94,18 @@ class DataExtractor:
 
         Args:
             protocol: The review protocol with extraction variables
-            model: Claude model to use (defaults to protocol or config setting)
+            model: Model to use (defaults to protocol or config setting)
         """
         self.protocol = protocol
-        raw_model = model or protocol.model or get_config().default_model
-        # Strip provider prefix if present (e.g., "anthropic/claude-..." -> "claude-...")
-        self.model = raw_model.split("/")[-1] if "/" in raw_model else raw_model
+        self.model = model or protocol.model or get_config().default_model
         self.pdf_processor = PDFProcessor()
-        self._client: anthropic.Anthropic | None = None
+        self._client: LLMClient | None = None
 
     @property
-    def client(self) -> anthropic.Anthropic:
-        """Get the Anthropic client."""
+    def client(self) -> LLMClient:
+        """Get the LLM client."""
         if self._client is None:
-            config = get_config()
-            if not config.anthropic_api_key:
-                raise ValueError("ANTHROPIC_API_KEY environment variable is required")
-            self._client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+            self._client = create_client()
         return self._client
 
     def _format_variables(self, variables: list[ExtractionVariable]) -> str:
@@ -154,6 +148,8 @@ class DataExtractor:
 
     def _coerce_types(self, data: dict[str, Any]) -> dict[str, Any]:
         """Coerce extracted values to expected types based on variable definitions."""
+        import re
+
         result = {}
 
         var_types = {var.name: var.type for var in self.protocol.extraction_variables}
@@ -170,8 +166,6 @@ class DataExtractor:
                     # Handle strings like "123" or "123 patients"
                     if isinstance(value, str):
                         # Extract first number
-                        import re
-
                         match = re.search(r"-?\d+", value)
                         if match:
                             result[key] = int(match.group())
@@ -185,8 +179,6 @@ class DataExtractor:
             elif expected_type == "float":
                 try:
                     if isinstance(value, str):
-                        import re
-
                         match = re.search(r"-?\d+\.?\d*", value)
                         if match:
                             result[key] = float(match.group())
@@ -259,32 +251,19 @@ class DataExtractor:
             variables_text = self._format_variables(self.protocol.extraction_variables)
 
             if content_type == "document":
-                # Use Claude's document processing
+                # Use LiteLLM's document processing
                 prompt = EXTRACTION_PROMPT.format(
                     title=citation.title,
                     authors=", ".join(citation.authors) if citation.authors else "Not specified",
                     year=citation.year or "Not specified",
                     variables=variables_text,
                 )
-                message = self.client.messages.create(
+                response_text = self.client.complete_with_document(
+                    prompt=prompt,
+                    document_base64=content,
                     model=self.model,
+                    document_type="application/pdf",
                     max_tokens=4096,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "document",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": "application/pdf",
-                                        "data": content,
-                                    },
-                                },
-                                {"type": "text", "text": prompt},
-                            ],
-                        }
-                    ],
                 )
             else:
                 # Use text-based extraction
@@ -295,13 +274,12 @@ class DataExtractor:
                     content=content,
                     variables=variables_text,
                 )
-                message = self.client.messages.create(
+                response_text = self.client.complete(
+                    prompt=prompt,
                     model=self.model,
                     max_tokens=4096,
-                    messages=[{"role": "user", "content": prompt}],
                 )
 
-            response_text = message.content[0].text  # type: ignore[union-attr]
             extracted_data = self._parse_json_response(response_text)
             extracted_data = self._coerce_types(extracted_data)
 
@@ -323,7 +301,7 @@ class DataExtractor:
                 extracted_at=datetime.now(),
             )
 
-        except anthropic.APIError:
+        except Exception:
             logger.exception("API error extracting from citation %d", citation.id)
             return ExtractionResult(
                 citation_id=citation.id,

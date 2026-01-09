@@ -1,11 +1,10 @@
-"""Abstract screening agent using Claude."""
+"""Abstract screening agent using LiteLLM for multi-provider support."""
 
 import logging
 from datetime import datetime
 
-import anthropic
-
 from automated_sr.config import get_config
+from automated_sr.llm import LLMClient, create_client
 from automated_sr.models import Citation, ReviewProtocol, ScreeningDecision, ScreeningResult
 
 logger = logging.getLogger(__name__)
@@ -56,7 +55,7 @@ DECISION: [INCLUDE/EXCLUDE/UNCERTAIN]"""
 
 
 class AbstractScreener:
-    """Screens citations at the abstract level using Claude."""
+    """Screens citations at the abstract level using LiteLLM."""
 
     def __init__(self, protocol: ReviewProtocol, model: str | None = None) -> None:
         """
@@ -64,22 +63,17 @@ class AbstractScreener:
 
         Args:
             protocol: The review protocol with objectives and criteria
-            model: Claude model to use (defaults to protocol or config setting)
+            model: Model to use (defaults to protocol or config setting)
         """
         self.protocol = protocol
-        raw_model = model or protocol.model or get_config().default_model
-        # Strip provider prefix if present (e.g., "anthropic/claude-..." -> "claude-...")
-        self.model = raw_model.split("/")[-1] if "/" in raw_model else raw_model
-        self._client: anthropic.Anthropic | None = None
+        self.model = model or protocol.model or get_config().default_model
+        self._client: LLMClient | None = None
 
     @property
-    def client(self) -> anthropic.Anthropic:
-        """Get the Anthropic client."""
+    def client(self) -> LLMClient:
+        """Get the LLM client."""
         if self._client is None:
-            config = get_config()
-            if not config.anthropic_api_key:
-                raise ValueError("ANTHROPIC_API_KEY environment variable is required")
-            self._client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+            self._client = create_client()
         return self._client
 
     def _format_criteria(self, criteria: list[str]) -> str:
@@ -143,13 +137,12 @@ class AbstractScreener:
         logger.debug("Screening citation %d: %s", citation.id, citation.title[:50])
 
         try:
-            message = self.client.messages.create(
+            response_text = self.client.complete(
+                prompt=prompt,
                 model=self.model,
                 max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}],
             )
 
-            response_text = message.content[0].text  # type: ignore[union-attr]
             decision, reasoning = self._parse_response(response_text)
 
             logger.info("Citation %d: %s", citation.id, decision.value)
@@ -162,7 +155,7 @@ class AbstractScreener:
                 screened_at=datetime.now(),
             )
 
-        except anthropic.APIError:
+        except Exception:
             logger.exception("API error screening citation %d", citation.id)
             # Return uncertain on API errors so we don't lose the citation
             return ScreeningResult(
