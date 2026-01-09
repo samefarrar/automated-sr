@@ -51,16 +51,12 @@ class TestMeanDifference:
 
     def test_mean_difference_negative(self) -> None:
         """Test negative mean difference."""
-        result = MetaAnalysis.calculate_mean_difference(
-            mean1=5.0, sd1=1.0, n1=30, mean2=7.0, sd2=1.0, n2=30
-        )
+        result = MetaAnalysis.calculate_mean_difference(mean1=5.0, sd1=1.0, n1=30, mean2=7.0, sd2=1.0, n2=30)
         assert result.effect == pytest.approx(-2.0, rel=0.01)
 
     def test_mean_difference_zero(self) -> None:
         """Test zero mean difference."""
-        result = MetaAnalysis.calculate_mean_difference(
-            mean1=10.0, sd1=2.0, n1=50, mean2=10.0, sd2=2.0, n2=50
-        )
+        result = MetaAnalysis.calculate_mean_difference(mean1=10.0, sd1=2.0, n1=50, mean2=10.0, sd2=2.0, n2=50)
         assert result.effect == pytest.approx(0.0, abs=0.01)
 
 
@@ -95,30 +91,22 @@ class TestOddsRatio:
 
     def test_odds_ratio_equal_odds(self) -> None:
         """Test OR when odds are equal (should be ~1)."""
-        result = MetaAnalysis.calculate_odds_ratio(
-            events1=10, total1=100, events2=10, total2=100
-        )
+        result = MetaAnalysis.calculate_odds_ratio(events1=10, total1=100, events2=10, total2=100)
         assert result.effect == pytest.approx(1.0, rel=0.1)
 
     def test_odds_ratio_higher_treatment(self) -> None:
         """Test OR when treatment has higher odds."""
-        result = MetaAnalysis.calculate_odds_ratio(
-            events1=30, total1=100, events2=10, total2=100
-        )
+        result = MetaAnalysis.calculate_odds_ratio(events1=30, total1=100, events2=10, total2=100)
         assert result.effect > 1.0
 
     def test_odds_ratio_lower_treatment(self) -> None:
         """Test OR when treatment has lower odds."""
-        result = MetaAnalysis.calculate_odds_ratio(
-            events1=10, total1=100, events2=30, total2=100
-        )
+        result = MetaAnalysis.calculate_odds_ratio(events1=10, total1=100, events2=30, total2=100)
         assert result.effect < 1.0
 
     def test_odds_ratio_zero_events(self) -> None:
         """Test OR with zero events (continuity correction)."""
-        result = MetaAnalysis.calculate_odds_ratio(
-            events1=0, total1=50, events2=5, total2=50
-        )
+        result = MetaAnalysis.calculate_odds_ratio(events1=0, total1=50, events2=5, total2=50)
         # Should handle zero without error
         assert result.effect >= 0
         assert result.ci_lower > 0  # CI should be positive
@@ -129,16 +117,12 @@ class TestRiskRatio:
 
     def test_risk_ratio_equal_risk(self) -> None:
         """Test RR when risks are equal (should be ~1)."""
-        result = MetaAnalysis.calculate_risk_ratio(
-            events1=10, total1=100, events2=10, total2=100
-        )
+        result = MetaAnalysis.calculate_risk_ratio(events1=10, total1=100, events2=10, total2=100)
         assert result.effect == pytest.approx(1.0, rel=0.1)
 
     def test_risk_ratio_doubled_risk(self) -> None:
         """Test RR when treatment has double the risk."""
-        result = MetaAnalysis.calculate_risk_ratio(
-            events1=20, total1=100, events2=10, total2=100
-        )
+        result = MetaAnalysis.calculate_risk_ratio(events1=20, total1=100, events2=10, total2=100)
         assert result.effect == pytest.approx(2.0, rel=0.1)
 
 
@@ -203,24 +187,18 @@ class TestRandomEffects:
             EffectSize(study_id=3, study_name="Study C", effect=0.5, se=0.1, ci_lower=0.3, ci_upper=0.7),
         ]
 
-    def test_random_effects_calculates_tau_squared(
-        self, heterogeneous_studies: list[EffectSize]
-    ) -> None:
+    def test_random_effects_calculates_tau_squared(self, heterogeneous_studies: list[EffectSize]) -> None:
         """Test tau-squared is calculated."""
         result = MetaAnalysis.random_effects(heterogeneous_studies)
         assert result.tau_squared is not None
         assert result.tau_squared >= 0
 
-    def test_random_effects_method_is_random(
-        self, heterogeneous_studies: list[EffectSize]
-    ) -> None:
+    def test_random_effects_method_is_random(self, heterogeneous_studies: list[EffectSize]) -> None:
         """Test that method is set to random."""
         result = MetaAnalysis.random_effects(heterogeneous_studies)
         assert result.method == PoolingMethod.RANDOM
 
-    def test_random_effects_wider_ci_with_heterogeneity(
-        self, heterogeneous_studies: list[EffectSize]
-    ) -> None:
+    def test_random_effects_wider_ci_with_heterogeneity(self, heterogeneous_studies: list[EffectSize]) -> None:
         """Test that random effects has wider CI with heterogeneity."""
         fixed = MetaAnalysis.fixed_effects(heterogeneous_studies)
         random = MetaAnalysis.random_effects(heterogeneous_studies)

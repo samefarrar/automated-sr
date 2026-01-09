@@ -1,6 +1,5 @@
 """Tests for PDF DOI extraction."""
 
-
 from automated_sr.pdf.doi_extractor import extract_doi_regex, normalize_doi
 
 

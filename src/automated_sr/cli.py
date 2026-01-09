@@ -750,9 +750,7 @@ def import_pdfs(
                     continue
 
                 # Check if citation already has a PDF
-                existing = db.conn.execute(
-                    "SELECT pdf_path FROM citations WHERE id = ?", (citation_id,)
-                ).fetchone()
+                existing = db.conn.execute("SELECT pdf_path FROM citations WHERE id = ?", (citation_id,)).fetchone()
                 if existing and existing[0]:
                     existing_path = Path(existing[0])
                     if existing_path.exists():
@@ -799,18 +797,19 @@ def import_pdfs(
 @app.command("export-to-zotero")
 def export_to_zotero(
     review: Annotated[str, typer.Option("--review", "-r", help="Review name")],
-    collection_name: Annotated[str | None, typer.Option("--collection", "-c", help="Zotero collection name")] = None,
     included_only: Annotated[bool, typer.Option("--included-only", help="Only export included citations")] = False,
     stage: Annotated[str, typer.Option("--stage", "-s", help="Stage to filter by: abstract or fulltext")] = "abstract",
+    use_web_api: Annotated[bool, typer.Option("--web-api", help="Use Zotero web API instead of local")] = False,
 ) -> None:
-    """Export citations to a Zotero collection for PDF retrieval.
+    """Export citations to Zotero for PDF retrieval.
 
-    Creates a collection named after the review (or custom name) and adds all citations.
-    You can then use Zotero's 'Find Available PDFs' feature to retrieve PDFs using
-    institutional access.
+    By default, uses the local Zotero API (requires Zotero to be running).
+    Items are added to the currently selected collection in Zotero.
+
+    You can then use Zotero's 'Find Available PDFs' feature to retrieve PDFs
+    using institutional access.
     """
-    from automated_sr.citations.zotero import ZoteroClient, ZoteroError
-    from automated_sr.config import get_zotero_config
+    from automated_sr.citations.zotero import ZoteroLocalClient
 
     db = get_db()
 
@@ -823,10 +822,7 @@ def export_to_zotero(
 
     # Get citations
     if included_only:
-        if stage == "abstract":
-            citations = db.get_included_abstracts(review_id)
-        else:
-            citations = db.get_included_fulltext(review_id)
+        citations = db.get_included_abstracts(review_id) if stage == "abstract" else db.get_included_fulltext(review_id)
         console.print(f"[blue]Exporting {len(citations)} included citations to Zotero...[/blue]")
     else:
         citations = db.get_citations(review_id)
@@ -837,49 +833,75 @@ def export_to_zotero(
         db.close()
         return
 
-    # Initialize Zotero client
-    try:
-        zotero_config = get_zotero_config()
-        zotero_client = ZoteroClient(zotero_config)
-    except ZoteroError as e:
-        console.print(f"[red]Zotero configuration error:[/red] {e}")
-        console.print("\nTo configure Zotero, set these environment variables:")
-        console.print("  ZOTERO_LIBRARY_ID - Your Zotero user ID (from zotero.org/settings/keys)")
-        console.print("  ZOTERO_API_KEY - Your Zotero API key (from zotero.org/settings/keys)")
-        raise typer.Exit(1) from None
+    if use_web_api:
+        # Use web API (requires API keys)
+        from automated_sr.citations.zotero import ZoteroClient, ZoteroError
+        from automated_sr.config import get_zotero_config
 
-    # Test connection
-    if not zotero_client.test_connection():
-        console.print("[red]Failed to connect to Zotero API.[/red]")
-        console.print("Check your ZOTERO_LIBRARY_ID and ZOTERO_API_KEY.")
-        raise typer.Exit(1)
+        try:
+            zotero_config = get_zotero_config()
+            zotero_client = ZoteroClient(zotero_config)
+        except ZoteroError as e:
+            console.print(f"[red]Zotero configuration error:[/red] {e}")
+            console.print("\nTo configure Zotero web API, set these environment variables:")
+            console.print("  ZOTERO_LIBRARY_ID - Your Zotero user ID")
+            console.print("  ZOTERO_API_KEY - Your Zotero API key")
+            raise typer.Exit(1) from None
 
-    # Use review name as collection name if not specified
-    target_collection = collection_name or f"SR: {review}"
+        if not zotero_client.test_connection():
+            console.print("[red]Failed to connect to Zotero web API.[/red]")
+            raise typer.Exit(1)
 
-    console.print(f"Creating/using collection: [bold]{target_collection}[/bold]")
+        target_collection = f"SR: {review}"
+        console.print(f"Creating collection: [bold]{target_collection}[/bold]")
 
-    # Export to Zotero
-    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
-        progress.add_task("Exporting to Zotero...", total=None)
-        collection_key, successful, failed = zotero_client.export_citations_to_collection(
-            citations, target_collection
-        )
+        with Progress(
+            SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console
+        ) as progress:
+            progress.add_task("Exporting to Zotero...", total=None)
+            collection_key, successful, failed = zotero_client.export_citations_to_collection(
+                citations, target_collection
+            )
 
-    if collection_key:
-        console.print("\n[bold green]Export Complete![/bold green]")
-        console.print(f"  Collection: {target_collection}")
-        console.print(f"  Items created: {successful}")
-        if failed:
-            console.print(f"  [yellow]Failed: {failed}[/yellow]")
-        console.print("\n[bold]Next steps:[/bold]")
-        console.print("  1. Open Zotero and find the collection")
-        console.print("  2. Select all items (Ctrl/Cmd+A)")
-        console.print("  3. Right-click > Find Available PDFs")
-        console.print("  4. After PDFs are downloaded, run:")
-        console.print(f"     [dim]sr import-from-zotero --review {review} --collection \"{target_collection}\"[/dim]")
+        if collection_key:
+            console.print("\n[bold green]Export Complete![/bold green]")
+            console.print(f"  Collection: {target_collection}")
+            console.print(f"  Items created: {successful}")
+            if failed:
+                console.print(f"  [yellow]Failed: {failed}[/yellow]")
     else:
-        console.print("[red]Export failed. Check the error messages above.[/red]")
+        # Use local API (no auth needed, Zotero must be running)
+        local_client = ZoteroLocalClient()
+
+        if not local_client.is_running():
+            console.print("[red]Zotero is not running.[/red]")
+            console.print("\nPlease start Zotero and try again.")
+            console.print("Or use --web-api flag to use the Zotero web API instead.")
+            raise typer.Exit(1)
+
+        console.print("[green]Connected to local Zotero instance[/green]")
+        console.print("[dim]Items will be added to the currently selected collection in Zotero[/dim]")
+        console.print()
+
+        with Progress(
+            SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console
+        ) as progress:
+            progress.add_task("Exporting to Zotero...", total=None)
+            successful, failed = local_client.save_citations(citations)
+
+        local_client.close()
+
+        if successful > 0:
+            console.print("\n[bold green]Export Complete![/bold green]")
+            console.print(f"  Items created: {successful}")
+            if failed:
+                console.print(f"  [yellow]Failed: {failed}[/yellow]")
+
+    console.print("\n[bold]Next steps:[/bold]")
+    console.print("  1. In Zotero, select all items (Ctrl/Cmd+A)")
+    console.print("  2. Right-click > Find Available PDFs")
+    console.print("  3. After PDFs are downloaded, run:")
+    console.print(f"     [dim]sr import-pdfs --review {review} --dir ~/Zotero/storage[/dim]")
 
     db.close()
 
@@ -917,10 +939,7 @@ def screen_multi(
             raise typer.Exit(0)
 
     # Get unscreened citations
-    if stage == "abstract":
-        citations = db.get_unscreened_abstracts(review_id)
-    else:
-        citations = db.get_unscreened_fulltext(review_id)
+    citations = db.get_unscreened_abstracts(review_id) if stage == "abstract" else db.get_unscreened_fulltext(review_id)
 
     if not citations:
         console.print(f"[green]All citations have been {stage} screened.[/green]")

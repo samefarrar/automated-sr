@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 from pyzotero import zotero
 
 from automated_sr.config import ZoteroConfig
@@ -11,9 +12,146 @@ from automated_sr.models import Citation
 
 logger = logging.getLogger(__name__)
 
+# Local Zotero connector API base URL
+ZOTERO_LOCAL_API = "http://localhost:23119"
+
 
 class ZoteroError(Exception):
     """Error interacting with Zotero."""
+
+
+class ZoteroLocalClient:
+    """Client for interacting with local Zotero instance via connector API.
+
+    This uses the local HTTP API at localhost:23119 which requires Zotero
+    to be running but doesn't need any API keys.
+    """
+
+    def __init__(self, base_url: str = ZOTERO_LOCAL_API) -> None:
+        """Initialize the local Zotero client."""
+        self.base_url = base_url
+        self._http = httpx.Client(timeout=30.0)
+
+    def close(self) -> None:
+        """Close the HTTP client."""
+        self._http.close()
+
+    def __enter__(self) -> "ZoteroLocalClient":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def is_running(self) -> bool:
+        """Check if Zotero is running."""
+        try:
+            response = self._http.get(f"{self.base_url}/connector/ping")
+            return "Zotero is running" in response.text
+        except Exception:
+            return False
+
+    def _citation_to_zotero_item(self, citation: Citation) -> dict[str, Any]:
+        """Convert a Citation to Zotero item format."""
+        creators = []
+        for author in citation.authors:
+            if ", " in author:
+                parts = author.split(", ", 1)
+                creators.append(
+                    {
+                        "creatorType": "author",
+                        "lastName": parts[0],
+                        "firstName": parts[1] if len(parts) > 1 else "",
+                    }
+                )
+            else:
+                parts = author.rsplit(" ", 1)
+                if len(parts) == 2:
+                    creators.append(
+                        {
+                            "creatorType": "author",
+                            "firstName": parts[0],
+                            "lastName": parts[1],
+                        }
+                    )
+                else:
+                    creators.append(
+                        {
+                            "creatorType": "author",
+                            "lastName": author,
+                            "firstName": "",
+                        }
+                    )
+
+        item: dict[str, Any] = {
+            "itemType": "journalArticle",
+            "title": citation.title,
+            "creators": creators,
+        }
+
+        if citation.abstract:
+            item["abstractNote"] = citation.abstract
+        if citation.year:
+            item["date"] = str(citation.year)
+        if citation.doi:
+            item["DOI"] = citation.doi
+        if citation.journal:
+            item["publicationTitle"] = citation.journal
+
+        return item
+
+    def save_citations(
+        self,
+        citations: list[Citation],
+        collection_name: str | None = None,
+    ) -> tuple[int, int]:
+        """
+        Save citations to Zotero via the local connector API.
+
+        Args:
+            citations: List of citations to save
+            collection_name: Optional collection name (items go to selected collection if None)
+
+        Returns:
+            Tuple of (successful_count, failed_count)
+        """
+        successful = 0
+        failed = 0
+
+        # Convert citations to Zotero format
+        items = [self._citation_to_zotero_item(c) for c in citations]
+
+        # The connector API expects items in batches
+        # We'll send them in smaller batches to avoid timeouts
+        batch_size = 20
+
+        for i in range(0, len(items), batch_size):
+            batch = items[i : i + batch_size]
+
+            payload = {
+                "items": batch,
+                "uri": "http://systematic-review-import",  # Required field
+            }
+
+            try:
+                response = self._http.post(
+                    f"{self.base_url}/connector/saveItems",
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                )
+
+                if response.status_code == 200 or response.status_code == 201:
+                    successful += len(batch)
+                    logger.info("Saved batch of %d items to Zotero", len(batch))
+                else:
+                    failed += len(batch)
+                    logger.warning("Failed to save batch: %s", response.text)
+
+            except Exception:
+                logger.exception("Error saving batch to Zotero")
+                failed += len(batch)
+
+        logger.info("Saved %d citations to Zotero (%d failed)", successful, failed)
+        return successful, failed
 
 
 class ZoteroClient:
@@ -343,25 +481,31 @@ class ZoteroClient:
             # Try to parse "Last, First" format
             if ", " in author:
                 parts = author.split(", ", 1)
-                creators.append({
-                    "creatorType": "author",
-                    "lastName": parts[0],
-                    "firstName": parts[1] if len(parts) > 1 else "",
-                })
+                creators.append(
+                    {
+                        "creatorType": "author",
+                        "lastName": parts[0],
+                        "firstName": parts[1] if len(parts) > 1 else "",
+                    }
+                )
             else:
                 # Assume "First Last" format or single name
                 parts = author.rsplit(" ", 1)
                 if len(parts) == 2:
-                    creators.append({
-                        "creatorType": "author",
-                        "firstName": parts[0],
-                        "lastName": parts[1],
-                    })
+                    creators.append(
+                        {
+                            "creatorType": "author",
+                            "firstName": parts[0],
+                            "lastName": parts[1],
+                        }
+                    )
                 else:
-                    creators.append({
-                        "creatorType": "author",
-                        "name": author,
-                    })
+                    creators.append(
+                        {
+                            "creatorType": "author",
+                            "name": author,
+                        }
+                    )
 
         item: dict[str, Any] = {
             "itemType": item_type,
