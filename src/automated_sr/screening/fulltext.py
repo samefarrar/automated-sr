@@ -108,9 +108,7 @@ class FullTextScreener:
         self.protocol = protocol
         raw_model = model or protocol.model or get_config().default_model
         # Strip provider prefix if present (e.g., "anthropic/claude-..." -> "claude-...")
-        if raw_model and raw_model.startswith("anthropic/"):
-            raw_model = raw_model[10:]  # len("anthropic/") = 10
-        self.model = raw_model
+        self.model = raw_model.split("/")[-1] if "/" in raw_model else raw_model
         self.pdf_processor = PDFProcessor()
         self._client: anthropic.Anthropic | None = None
 

@@ -67,7 +67,9 @@ class AbstractScreener:
             model: Claude model to use (defaults to protocol or config setting)
         """
         self.protocol = protocol
-        self.model = model or protocol.model or get_config().default_model
+        raw_model = model or protocol.model or get_config().default_model
+        # Strip provider prefix if present (e.g., "anthropic/claude-..." -> "claude-...")
+        self.model = raw_model.split("/")[-1] if "/" in raw_model else raw_model
         self._client: anthropic.Anthropic | None = None
 
     @property
