@@ -177,19 +177,29 @@ class ZoteroLocalClient:
         if not selected:
             raise ZoteroError("Cannot get selected collection from Zotero")
 
-        collection_id = selected.get("id")
         collection_name = selected.get("name")
-        logger.info("Getting items from collection '%s' (id=%s)", collection_name, collection_id)
+        logger.info("Getting items from collection '%s'", collection_name)
 
         # Use pyzotero local mode
         zot = zotero.Zotero(library_id, "user", local=True)
 
         results = []
         try:
+            # Find collection key by name (connector API gives numeric ID, pyzotero needs key)
+            collection_key = None
+            if collection_name:
+                collections = cast(list[dict[str, Any]], zot.collections())
+                for coll in collections:
+                    if coll.get("data", {}).get("name") == collection_name:
+                        collection_key = coll.get("key")
+                        logger.info("Found collection key: %s", collection_key)
+                        break
+
             # Get items from collection
-            if collection_id:
-                items = cast(list[dict[str, Any]], zot.collection_items(collection_id, limit=500))
+            if collection_key:
+                items = cast(list[dict[str, Any]], zot.collection_items(collection_key, limit=500))
             else:
+                logger.warning("Collection key not found, getting all items")
                 items = cast(list[dict[str, Any]], zot.top(limit=500))
 
             for item in items:
