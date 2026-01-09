@@ -449,14 +449,33 @@ class Database:
     # Extraction operations
     def get_unextracted(self, review_id: int) -> list[Citation]:
         """Get citations that passed full-text screening but haven't been extracted."""
+        # First try screening_consensus (multi-reviewer mode)
         cursor = self.conn.execute(
-            """SELECT c.* FROM citations c
-               JOIN fulltext_screening f ON c.id = f.citation_id
+            """SELECT DISTINCT c.* FROM citations c
+               JOIN screening_consensus sc ON c.id = sc.citation_id
                LEFT JOIN extractions e ON c.id = e.citation_id
-               WHERE c.review_id = ? AND f.decision = 'include' AND e.id IS NULL""",
+               WHERE c.review_id = ? AND sc.stage = 'fulltext'
+               AND sc.consensus_decision = 'include' AND e.id IS NULL""",
             (review_id,),
         )
-        return [self._row_to_citation(row) for row in cursor.fetchall()]
+        results = [self._row_to_citation(row) for row in cursor.fetchall()]
+
+        # If no consensus records, fall back to fulltext_screening (single-reviewer mode)
+        if not results:
+            cursor = self.conn.execute(
+                """SELECT DISTINCT c.* FROM citations c
+                   JOIN fulltext_screening f ON c.id = f.citation_id
+                   LEFT JOIN extractions e ON c.id = e.citation_id
+                   WHERE c.review_id = ? AND f.decision = 'include' AND e.id IS NULL
+                   AND NOT EXISTS (
+                       SELECT 1 FROM screening_consensus
+                       WHERE citation_id = c.id AND stage = 'fulltext'
+                   )""",
+                (review_id,),
+            )
+            results = [self._row_to_citation(row) for row in cursor.fetchall()]
+
+        return results
 
     def save_extraction(self, result: ExtractionResult) -> None:
         """Save an extraction result (updates if already exists)."""
