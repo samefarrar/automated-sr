@@ -211,6 +211,11 @@ def screen_abstracts(
 
     screener = AbstractScreener(protocol)
 
+    # Track results for current run only
+    run_included = 0
+    run_excluded = 0
+    run_uncertain = 0
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -223,16 +228,24 @@ def screen_abstracts(
             db.save_abstract_screening(result)
             progress.advance(task)
 
+            # Track decision for this run
+            if result.decision.value == "include":
+                run_included += 1
+            elif result.decision.value == "exclude":
+                run_excluded += 1
+            else:
+                run_uncertain += 1
+
             # Show result
             color = {"include": "green", "exclude": "red", "uncertain": "yellow"}[result.decision.value]
             console.print(f"  [{color}]{result.decision.value.upper()}[/{color}]: {citation.title[:60]}...")
 
-    # Show summary
-    stats = db.get_stats(review_id)
+    # Show summary of current run only
     console.print("\n[bold]Abstract Screening Complete[/bold]")
-    console.print(f"  Included: {stats.abstract_included}")
-    console.print(f"  Excluded: {stats.abstract_excluded}")
-    console.print(f"  Uncertain: {stats.abstract_uncertain}")
+    console.print(f"  Screened: {len(citations)}")
+    console.print(f"  Included: {run_included}")
+    console.print(f"  Excluded: {run_excluded}")
+    console.print(f"  Uncertain: {run_uncertain}")
 
     db.close()
 
@@ -279,6 +292,12 @@ def screen_fulltext(
 
     screener = FullTextScreener(protocol)
 
+    # Track results for current run only
+    run_included = 0
+    run_excluded = 0
+    run_uncertain = 0
+    run_pdf_errors = 0
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -291,16 +310,28 @@ def screen_fulltext(
             db.save_fulltext_screening(result)
             progress.advance(task)
 
+            # Track decision for this run
+            if result.decision.value == "include":
+                run_included += 1
+            elif result.decision.value == "exclude":
+                run_excluded += 1
+            else:
+                run_uncertain += 1
+
+            if result.pdf_error:
+                run_pdf_errors += 1
+
             color = {"include": "green", "exclude": "red", "uncertain": "yellow"}[result.decision.value]
             status = f" (PDF error: {result.pdf_error})" if result.pdf_error else ""
             console.print(f"  [{color}]{result.decision.value.upper()}[/{color}]: {citation.title[:50]}...{status}")
 
-    stats = db.get_stats(review_id)
+    # Show summary of current run only
     console.print("\n[bold]Full-Text Screening Complete[/bold]")
-    console.print(f"  Included: {stats.fulltext_included}")
-    console.print(f"  Excluded: {stats.fulltext_excluded}")
-    console.print(f"  Uncertain: {stats.fulltext_uncertain}")
-    console.print(f"  PDF errors: {stats.fulltext_pdf_errors}")
+    console.print(f"  Screened: {len(citations)}")
+    console.print(f"  Included: {run_included}")
+    console.print(f"  Excluded: {run_excluded}")
+    console.print(f"  Uncertain: {run_uncertain}")
+    console.print(f"  PDF errors: {run_pdf_errors}")
 
     db.close()
 
@@ -1141,6 +1172,10 @@ def screen_multi(
 
     screener = MultiReviewerScreener(protocol, stage=stage)
 
+    # Track results for current run only
+    run_included = 0
+    run_excluded = 0
+    run_uncertain = 0
     tiebreaker_count = 0
 
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
@@ -1148,6 +1183,14 @@ def screen_multi(
 
         for citation in citations:
             result = screener.screen(citation)
+
+            # Track decision for this run
+            if result.consensus_decision.value == "include":
+                run_included += 1
+            elif result.consensus_decision.value == "exclude":
+                run_excluded += 1
+            else:
+                run_uncertain += 1
 
             # Save individual reviewer results
             for reviewer_result in result.reviewer_results:
@@ -1176,17 +1219,12 @@ def screen_multi(
             decision_text = result.consensus_decision.value.upper()
             console.print(f"  [{color}]{decision_text}{tb_marker}[/{color}]: {citation.title[:50]}...")
 
-    # Show summary
-    stats = db.get_stats(review_id)
+    # Show summary of current run only
     console.print(f"\n[bold]Multi-Reviewer {stage.title()} Screening Complete[/bold]")
-    if stage == "abstract":
-        console.print(f"  Included: {stats.abstract_included}")
-        console.print(f"  Excluded: {stats.abstract_excluded}")
-        console.print(f"  Uncertain: {stats.abstract_uncertain}")
-    else:
-        console.print(f"  Included: {stats.fulltext_included}")
-        console.print(f"  Excluded: {stats.fulltext_excluded}")
-        console.print(f"  Uncertain: {stats.fulltext_uncertain}")
+    console.print(f"  Screened: {len(citations)}")
+    console.print(f"  Included: {run_included}")
+    console.print(f"  Excluded: {run_excluded}")
+    console.print(f"  Uncertain: {run_uncertain}")
     console.print(f"  Tiebreaker needed: {tiebreaker_count}")
 
     db.close()
