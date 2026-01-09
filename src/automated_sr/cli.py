@@ -796,6 +796,94 @@ def import_pdfs(
     db.close()
 
 
+@app.command("export-to-zotero")
+def export_to_zotero(
+    review: Annotated[str, typer.Option("--review", "-r", help="Review name")],
+    collection_name: Annotated[str | None, typer.Option("--collection", "-c", help="Zotero collection name")] = None,
+    included_only: Annotated[bool, typer.Option("--included-only", help="Only export included citations")] = False,
+    stage: Annotated[str, typer.Option("--stage", "-s", help="Stage to filter by: abstract or fulltext")] = "abstract",
+) -> None:
+    """Export citations to a Zotero collection for PDF retrieval.
+
+    Creates a collection named after the review (or custom name) and adds all citations.
+    You can then use Zotero's 'Find Available PDFs' feature to retrieve PDFs using
+    institutional access.
+    """
+    from automated_sr.citations.zotero import ZoteroClient, ZoteroError
+    from automated_sr.config import get_zotero_config
+
+    db = get_db()
+
+    review_data = db.get_review_by_name(review)
+    if not review_data:
+        console.print(f"[red]Error:[/red] Review '{review}' not found")
+        raise typer.Exit(1)
+
+    review_id = review_data["id"]
+
+    # Get citations
+    if included_only:
+        if stage == "abstract":
+            citations = db.get_included_abstracts(review_id)
+        else:
+            citations = db.get_included_fulltext(review_id)
+        console.print(f"[blue]Exporting {len(citations)} included citations to Zotero...[/blue]")
+    else:
+        citations = db.get_citations(review_id)
+        console.print(f"[blue]Exporting {len(citations)} citations to Zotero...[/blue]")
+
+    if not citations:
+        console.print("[yellow]No citations to export.[/yellow]")
+        db.close()
+        return
+
+    # Initialize Zotero client
+    try:
+        zotero_config = get_zotero_config()
+        zotero_client = ZoteroClient(zotero_config)
+    except ZoteroError as e:
+        console.print(f"[red]Zotero configuration error:[/red] {e}")
+        console.print("\nTo configure Zotero, set these environment variables:")
+        console.print("  ZOTERO_LIBRARY_ID - Your Zotero user ID (from zotero.org/settings/keys)")
+        console.print("  ZOTERO_API_KEY - Your Zotero API key (from zotero.org/settings/keys)")
+        raise typer.Exit(1) from None
+
+    # Test connection
+    if not zotero_client.test_connection():
+        console.print("[red]Failed to connect to Zotero API.[/red]")
+        console.print("Check your ZOTERO_LIBRARY_ID and ZOTERO_API_KEY.")
+        raise typer.Exit(1)
+
+    # Use review name as collection name if not specified
+    target_collection = collection_name or f"SR: {review}"
+
+    console.print(f"Creating/using collection: [bold]{target_collection}[/bold]")
+
+    # Export to Zotero
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
+        progress.add_task("Exporting to Zotero...", total=None)
+        collection_key, successful, failed = zotero_client.export_citations_to_collection(
+            citations, target_collection
+        )
+
+    if collection_key:
+        console.print("\n[bold green]Export Complete![/bold green]")
+        console.print(f"  Collection: {target_collection}")
+        console.print(f"  Items created: {successful}")
+        if failed:
+            console.print(f"  [yellow]Failed: {failed}[/yellow]")
+        console.print("\n[bold]Next steps:[/bold]")
+        console.print("  1. Open Zotero and find the collection")
+        console.print("  2. Select all items (Ctrl/Cmd+A)")
+        console.print("  3. Right-click > Find Available PDFs")
+        console.print("  4. After PDFs are downloaded, run:")
+        console.print(f"     [dim]sr import-from-zotero --review {review} --collection \"{target_collection}\"[/dim]")
+    else:
+        console.print("[red]Export failed. Check the error messages above.[/red]")
+
+    db.close()
+
+
 @app.command("screen-multi")
 def screen_multi(
     review: Annotated[str, typer.Option("--review", "-r", help="Review name")],

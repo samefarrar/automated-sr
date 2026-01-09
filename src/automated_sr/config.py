@@ -92,3 +92,8 @@ def set_config(config: Config) -> None:
     """Set the global configuration instance."""
     global _config
     _config = config
+
+
+def get_zotero_config() -> ZoteroConfig:
+    """Get the Zotero configuration from the global config."""
+    return get_config().zotero

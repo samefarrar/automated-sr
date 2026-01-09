@@ -256,6 +256,36 @@ class Database:
         )
         return [self._row_to_citation(row) for row in cursor.fetchall()]
 
+    def get_included_abstracts(self, review_id: int) -> list[Citation]:
+        """Get citations included after abstract screening (via consensus or single reviewer)."""
+        cursor = self.conn.execute(
+            """SELECT DISTINCT c.* FROM citations c
+               INNER JOIN screening_consensus sc ON c.id = sc.citation_id
+               WHERE c.review_id = ? AND sc.stage = 'abstract' AND sc.consensus_decision = 'include'
+               UNION
+               SELECT DISTINCT c.* FROM citations c
+               INNER JOIN abstract_screening a ON c.id = a.citation_id
+               LEFT JOIN screening_consensus sc ON c.id = sc.citation_id AND sc.stage = 'abstract'
+               WHERE c.review_id = ? AND a.decision = 'include' AND sc.id IS NULL""",
+            (review_id, review_id),
+        )
+        return [self._row_to_citation(row) for row in cursor.fetchall()]
+
+    def get_included_fulltext(self, review_id: int) -> list[Citation]:
+        """Get citations included after full-text screening (via consensus or single reviewer)."""
+        cursor = self.conn.execute(
+            """SELECT DISTINCT c.* FROM citations c
+               INNER JOIN screening_consensus sc ON c.id = sc.citation_id
+               WHERE c.review_id = ? AND sc.stage = 'fulltext' AND sc.consensus_decision = 'include'
+               UNION
+               SELECT DISTINCT c.* FROM citations c
+               INNER JOIN fulltext_screening f ON c.id = f.citation_id
+               LEFT JOIN screening_consensus sc ON c.id = sc.citation_id AND sc.stage = 'fulltext'
+               WHERE c.review_id = ? AND f.decision = 'include' AND sc.id IS NULL""",
+            (review_id, review_id),
+        )
+        return [self._row_to_citation(row) for row in cursor.fetchall()]
+
     def save_abstract_screening(self, result: ScreeningResult) -> None:
         """Save an abstract screening result."""
         self.conn.execute(

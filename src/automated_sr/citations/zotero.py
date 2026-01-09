@@ -274,3 +274,192 @@ class ZoteroClient:
 
         logger.info("Found %d citations with PDFs, %d without", len(with_pdfs), len(without_pdfs))
         return with_pdfs, without_pdfs
+
+    def create_collection(self, name: str, parent_key: str | None = None) -> str | None:
+        """
+        Create a new collection (folder) in Zotero.
+
+        Args:
+            name: Name of the collection
+            parent_key: Optional parent collection key for nested collections
+
+        Returns:
+            The key of the created collection, or None if failed
+        """
+        try:
+            collection_data: dict[str, Any] = {"name": name}
+            if parent_key:
+                collection_data["parentCollection"] = parent_key
+
+            result = self.client.create_collections([collection_data])
+
+            if result and "successful" in result:
+                # Get the key of the created collection
+                successful = result["successful"]
+                if successful and "0" in successful:
+                    key = successful["0"]["key"]
+                    logger.info("Created Zotero collection '%s' with key %s", name, key)
+                    return key
+
+            logger.warning("Failed to create collection: %s", result)
+            return None
+
+        except Exception:
+            logger.exception("Failed to create Zotero collection '%s'", name)
+            return None
+
+    def get_collection_by_name(self, name: str) -> str | None:
+        """
+        Find a collection by name.
+
+        Args:
+            name: Name of the collection to find
+
+        Returns:
+            Collection key if found, None otherwise
+        """
+        collections = self.list_collections()
+        for collection in collections:
+            if collection["name"] == name:
+                return collection["key"]
+        return None
+
+    def _citation_to_zotero_item(self, citation: Citation) -> dict[str, Any]:
+        """
+        Convert a Citation to Zotero item format.
+
+        Args:
+            citation: Citation object to convert
+
+        Returns:
+            Dictionary in Zotero item format
+        """
+        # Determine item type based on source
+        item_type = "journalArticle"
+
+        # Build creators list
+        creators = []
+        for author in citation.authors:
+            # Try to parse "Last, First" format
+            if ", " in author:
+                parts = author.split(", ", 1)
+                creators.append({
+                    "creatorType": "author",
+                    "lastName": parts[0],
+                    "firstName": parts[1] if len(parts) > 1 else "",
+                })
+            else:
+                # Assume "First Last" format or single name
+                parts = author.rsplit(" ", 1)
+                if len(parts) == 2:
+                    creators.append({
+                        "creatorType": "author",
+                        "firstName": parts[0],
+                        "lastName": parts[1],
+                    })
+                else:
+                    creators.append({
+                        "creatorType": "author",
+                        "name": author,
+                    })
+
+        item: dict[str, Any] = {
+            "itemType": item_type,
+            "title": citation.title,
+            "creators": creators,
+        }
+
+        if citation.abstract:
+            item["abstractNote"] = citation.abstract
+        if citation.year:
+            item["date"] = str(citation.year)
+        if citation.doi:
+            item["DOI"] = citation.doi
+        if citation.journal:
+            item["publicationTitle"] = citation.journal
+
+        return item
+
+    def create_items(
+        self,
+        citations: list[Citation],
+        collection_key: str | None = None,
+        batch_size: int = 50,
+    ) -> tuple[int, int]:
+        """
+        Create Zotero items from citations.
+
+        Args:
+            citations: List of citations to create
+            collection_key: Optional collection to add items to
+            batch_size: Number of items to create per API call (max 50)
+
+        Returns:
+            Tuple of (successful_count, failed_count)
+        """
+        successful = 0
+        failed = 0
+
+        # Process in batches (Zotero API limit is 50 items per request)
+        for i in range(0, len(citations), batch_size):
+            batch = citations[i : i + batch_size]
+
+            items = []
+            for citation in batch:
+                item = self._citation_to_zotero_item(citation)
+                if collection_key:
+                    item["collections"] = [collection_key]
+                items.append(item)
+
+            try:
+                result = self.client.create_items(items)
+
+                if result:
+                    batch_successful = len(result.get("successful", {}))
+                    batch_failed = len(result.get("failed", {}))
+                    successful += batch_successful
+                    failed += batch_failed
+
+                    if result.get("failed"):
+                        for idx, error in result["failed"].items():
+                            logger.warning("Failed to create item %s: %s", idx, error)
+                else:
+                    failed += len(batch)
+
+            except Exception:
+                logger.exception("Failed to create batch of %d items", len(batch))
+                failed += len(batch)
+
+        logger.info("Created %d Zotero items (%d failed)", successful, failed)
+        return successful, failed
+
+    def export_citations_to_collection(
+        self,
+        citations: list[Citation],
+        collection_name: str,
+    ) -> tuple[str | None, int, int]:
+        """
+        Export citations to a Zotero collection, creating it if needed.
+
+        Args:
+            citations: List of citations to export
+            collection_name: Name of the collection to create/use
+
+        Returns:
+            Tuple of (collection_key, successful_count, failed_count)
+        """
+        # Check if collection already exists
+        collection_key = self.get_collection_by_name(collection_name)
+
+        if collection_key:
+            logger.info("Using existing collection '%s' (%s)", collection_name, collection_key)
+        else:
+            collection_key = self.create_collection(collection_name)
+            if not collection_key:
+                logger.error("Failed to create collection '%s'", collection_name)
+                return None, 0, len(citations)
+
+        # Create items in the collection
+        successful, failed = self.create_items(citations, collection_key)
+
+        return collection_key, successful, failed
