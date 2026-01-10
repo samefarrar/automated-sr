@@ -7,9 +7,10 @@ An end-to-end systematic review automation tool using Large Language Models (LLM
 - **Multi-reviewer screening** - Configure multiple LLM reviewers with automatic tiebreaker resolution
 - **Multi-provider support** - Use Anthropic, OpenAI, or OpenRouter via LiteLLM
 - **OpenAlex integration** - Search scholarly works and retrieve open access PDFs
-- **PDF import with DOI extraction** - Import manually downloaded PDFs by extracting DOIs
-- **Full-text screening** - Screen articles using PDF content with Claude's document processing
+- **Zotero integration** - Import from Zotero, export for PDF retrieval, link downloaded PDFs
+- **Full-text screening** - Screen articles using PDF content with document processing
 - **Data extraction** - Extract structured data from included studies
+- **Secondary filtering** - Filter extracted data by required fields, interventions, comparators
 - **Meta-analysis** - Calculate pooled effects and generate forest plots
 - **PRISMA flow tracking** - Automatic tracking of review progress
 
@@ -68,6 +69,10 @@ exclusion_criteria:
   - Animal studies
   - Review articles
 
+# Default model for single-reviewer screening
+model: anthropic/claude-sonnet-4-5-20250929
+
+# Data extraction variables
 extraction_variables:
   - name: sample_size
     description: Total number of participants
@@ -75,8 +80,14 @@ extraction_variables:
   - name: effect_size
     description: Primary outcome effect size
     type: float
+  - name: intervention
+    description: Name of the intervention
+    type: string
+  - name: comparator
+    description: Name of the comparator/control
+    type: string
 
-# Multi-reviewer configuration
+# Multi-reviewer configuration (optional)
 reviewers:
   - name: screener-1
     model: anthropic/claude-3-5-haiku-20241022
@@ -93,66 +104,136 @@ reviewers:
     role: tiebreaker
 ```
 
+Load the protocol:
 ```bash
-sr set-protocol my-review -p my-protocol.yaml
+sr init my-review --protocol my-protocol.yaml
 ```
 
 ### 4. Import citations
 
-From OpenAlex:
+**From RIS file:**
+```bash
+sr import references.ris --review my-review
+```
+
+**From OpenAlex search:**
 ```bash
 sr search-openalex "machine learning diagnosis" --review my-review --limit 500
 ```
 
-From RIS file:
+**From Zotero:**
 ```bash
-sr import-ris references.ris --review my-review
-```
+# List available collections first
+sr zotero-collections
 
-From Zotero:
-```bash
-sr import-zotero --review my-review --collection "My Collection"
+# Import from a collection
+sr import zotero --review my-review --collection "My Collection"
 ```
 
 ### 5. Screen citations
 
-Abstract screening with multiple reviewers:
+**Single-reviewer abstract screening:**
+```bash
+sr screen-abstracts --review my-review
+```
+
+**Multi-reviewer abstract screening** (requires `reviewers` in protocol):
 ```bash
 sr screen-multi --review my-review --stage abstract
 ```
 
-Fetch PDFs for included articles:
+### 6. Get PDFs for included citations
+
+**Option A: Automatic download via OpenAlex (open access only):**
 ```bash
 sr fetch-pdfs --review my-review
 ```
 
-Import manually downloaded PDFs:
+**Option B: Use Zotero for institutional access:**
 ```bash
+# Export included citations to Zotero
+sr export-to-zotero --review my-review --collection "SR Downloads" --included-only
+
+# In Zotero: Right-click collection → "Find Available PDFs"
+# Then link the PDFs back:
+sr link-zotero-pdfs --review my-review --collection "SR Downloads"
+```
+
+**Option C: Import manually downloaded PDFs:**
+```bash
+# PDFs can have any filename - DOI is extracted automatically
 sr import-pdfs --review my-review --dir ~/Downloads/pdfs
 ```
 
-Full-text screening:
+### 7. Full-text screening
+
+**Single-reviewer:**
 ```bash
 sr screen-fulltext --review my-review
 ```
 
-### 6. Extract data
+**Multi-reviewer:**
+```bash
+sr screen-multi --review my-review --stage fulltext
+```
+
+### 8. Extract data
 
 ```bash
 sr extract --review my-review
 ```
 
-### 7. Run meta-analysis
+### 9. Apply secondary filters (optional)
+
+Filter out extractions with missing required fields or ineligible interventions:
+```bash
+sr filter --review my-review --required "effect_size,sample_size"
+sr filter --review my-review --interventions "drug_a,drug_b" --comparators "placebo"
+```
+
+### 10. Run meta-analysis
 
 ```bash
 sr analyze --review my-review --effect SMD --model random --output ./results
 ```
 
-### 8. Check progress
+### 11. Export results
+
+```bash
+# Export all results (screening decisions, extractions) to CSV and JSON
+sr export --review my-review --output ./output
+
+# Export specific format
+sr export --review my-review --format csv
+```
+
+### 12. Check progress
 
 ```bash
 sr status --review my-review
 ```
+
+## Command Reference
+
+| Command | Description |
+|---------|-------------|
+| `sr init` | Initialize a new review |
+| `sr list` | List all reviews |
+| `sr import` | Import citations from RIS file or Zotero |
+| `sr search-openalex` | Search OpenAlex and import results |
+| `sr screen-abstracts` | Single-reviewer abstract screening |
+| `sr screen-fulltext` | Single-reviewer full-text screening |
+| `sr screen-multi` | Multi-reviewer screening with tiebreaker |
+| `sr fetch-pdfs` | Download open access PDFs via OpenAlex |
+| `sr import-pdfs` | Import manually downloaded PDFs by DOI |
+| `sr export-to-zotero` | Export citations to Zotero for PDF retrieval |
+| `sr link-zotero-pdfs` | Link PDFs from Zotero collection to citations |
+| `sr extract` | Extract data from included articles |
+| `sr filter` | Apply secondary filters to extracted data |
+| `sr analyze` | Run meta-analysis and generate forest plot |
+| `sr export` | Export results to CSV/JSON |
+| `sr status` | Show review progress and statistics |
+| `sr zotero-collections` | List Zotero collections |
 
 ## Multi-Reviewer Screening
 
@@ -172,16 +253,26 @@ Citation: "Deep Learning for Cancer Diagnosis..."
   tiebreaker: EXCLUDE (final decision)
 ```
 
-## PDF Import
+## Zotero Integration
 
-For articles not available as open access, you can manually download PDFs and import them:
+The tool integrates with Zotero for PDF management:
+
+1. **Import citations from Zotero**: Use existing Zotero libraries
+2. **Export to Zotero**: Send included citations to Zotero for PDF retrieval
+3. **Link PDFs**: Match Zotero PDFs back to review citations by DOI
+
+This workflow is ideal for accessing paywalled articles via institutional access:
 
 ```bash
-# PDFs can have any filename - DOI is extracted automatically
-sr import-pdfs --review my-review --dir ~/Downloads/
+# After abstract screening, export included citations
+sr export-to-zotero -r my-review -c "SR Full Texts" --included-only
 
-# Uses regex first, falls back to Claude Haiku for DOI extraction
-# Matches extracted DOIs against citations in the review
+# Use Zotero's "Find Available PDFs" with institutional login
+# Then link the downloaded PDFs back
+sr link-zotero-pdfs -r my-review -c "SR Full Texts"
+
+# Now run full-text screening
+sr screen-fulltext -r my-review
 ```
 
 ## Configuration
@@ -195,6 +286,18 @@ openalex_email: ${OPENALEX_EMAIL}
 data_dir: ~/.local/share/automated-sr
 default_model: anthropic/claude-sonnet-4-5-20250929
 ```
+
+The database is stored at `.sr_data/reviews.db` in your current working directory.
+
+## Model Names
+
+This tool uses [LiteLLM](https://docs.litellm.ai/) for multi-provider support. Model names follow LiteLLM conventions:
+
+| Provider | Model Name Example |
+|----------|-------------------|
+| Anthropic | `anthropic/claude-sonnet-4-5-20250929` |
+| OpenAI | `openai/gpt-4.1` |
+| OpenRouter | `openrouter/anthropic/claude-3.5-sonnet` |
 
 ## Project Structure
 
