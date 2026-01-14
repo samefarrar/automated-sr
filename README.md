@@ -234,6 +234,7 @@ sr status --review my-review
 | `sr export` | Export results to CSV/JSON |
 | `sr status` | Show review progress and statistics |
 | `sr zotero-collections` | List Zotero collections |
+| `sr suggest-search` | Generate database-specific search strategies |
 
 ## Multi-Reviewer Screening
 
@@ -252,6 +253,29 @@ Citation: "Deep Learning for Cancer Diagnosis..."
   screener-2 (sensitive): INCLUDE
   tiebreaker: EXCLUDE (final decision)
 ```
+
+## Search Strategy Generation
+
+Generate database-specific search strategies using AI:
+
+```bash
+# From a research question
+sr suggest-search "What is the effectiveness of exercise for chronic back pain?"
+
+# From an existing review's objective
+sr suggest-search --review my-review
+
+# Target specific databases
+sr suggest-search "..." -d pubmed -d scopus
+
+# Save to JSON file
+sr suggest-search "..." --output strategies.json
+```
+
+The command generates:
+- **Concept decomposition** (Population, Intervention, Comparator, Outcome)
+- **Database-specific syntax** for PubMed (MeSH), Scopus, Web of Science, OpenAlex
+- **Multiple strategies** per database with sensitivity/specificity trade-offs
 
 ## Zotero Integration
 
@@ -311,6 +335,7 @@ src/automated_sr/
 ├── pdf/              # PDF processing and DOI extraction
 ├── prompts/          # Screening prompt templates
 ├── screening/        # Abstract and full-text screening
+├── search/           # Search strategy generation
 ├── cli.py            # Command-line interface
 ├── config.py         # Configuration management
 ├── database.py       # SQLite database operations
