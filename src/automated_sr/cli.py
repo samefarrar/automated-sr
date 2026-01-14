@@ -120,44 +120,105 @@ def import_citations(
     source_str = str(source).lower()
 
     if source_str == "zotero":
-        # Zotero import
-        config = get_config()
-        try:
-            zotero_client = ZoteroClient(config.zotero)
-        except ZoteroError as e:
-            console.print(f"[red]Error:[/red] {e}")
-            raise typer.Exit(1) from None
+        # Zotero import - try local client first (no API key needed)
+        from automated_sr.citations.zotero import ZoteroLocalClient
 
-        console.print("[blue]Connecting to Zotero...[/blue]")
+        local_client = ZoteroLocalClient()
+        if local_client.is_running():
+            console.print("[blue]Connecting to local Zotero...[/blue]")
 
-        if not zotero_client.test_connection():
-            console.print("[red]Error:[/red] Could not connect to Zotero.")
-            console.print(
-                "Make sure Zotero is running and 'Allow other applications' is enabled in Settings > Advanced."
-            )
-            raise typer.Exit(1)
+            # Check selected collection
+            selected = local_client.get_selected_collection()
+            if selected:
+                collection_name = selected.get("name", "Unknown")
+                console.print(f"[dim]Reading from collection: {collection_name}[/dim]")
 
-        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as progress:
-            progress.add_task("Fetching citations from Zotero...", total=None)
-            citations_with_pdfs, citations_without_pdfs = zotero_client.get_citations_with_pdfs(collection, limit)
+            with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as progress:
+                progress.add_task("Fetching citations from Zotero...", total=None)
+                zotero_items = local_client.get_items_with_pdfs()
 
-        all_citations = citations_with_pdfs + citations_without_pdfs
-        if not all_citations:
-            console.print("[yellow]No citations found in Zotero.[/yellow]")
-            raise typer.Exit(0)
+            local_client.close()
 
-        # Add to database
-        db.add_citations(all_citations, review_id)
-        console.print(f"[green]Imported {len(all_citations)} citations from Zotero[/green]")
-        console.print(f"  - {len(citations_with_pdfs)} with PDFs")
-        console.print(f"  - {len(citations_without_pdfs)} without PDFs")
+            # Convert to Citation objects
+            citations_with_pdfs = []
+            citations_without_pdfs = []
 
-        if citations_without_pdfs:
-            console.print("\n[yellow]Citations missing PDFs:[/yellow]")
-            for c in citations_without_pdfs[:5]:
-                console.print(f"  - {c.title[:60]}...")
-            if len(citations_without_pdfs) > 5:
-                console.print(f"  ... and {len(citations_without_pdfs) - 5} more")
+            for item in zotero_items:
+                from automated_sr.models import Citation
+
+                citation = Citation(
+                    source="zotero",
+                    source_key=item.get("zotero_key"),
+                    title=item.get("title", "Unknown"),
+                    doi=item.get("doi"),
+                    pdf_path=item.get("pdf_path"),
+                    authors=[],  # Local API doesn't provide full metadata easily
+                )
+
+                if item.get("pdf_path"):
+                    citations_with_pdfs.append(citation)
+                else:
+                    citations_without_pdfs.append(citation)
+
+            all_citations = citations_with_pdfs + citations_without_pdfs
+            if not all_citations:
+                console.print("[yellow]No citations found in selected Zotero collection.[/yellow]")
+                console.print("Make sure you have a collection selected in Zotero.")
+                raise typer.Exit(0)
+
+            # Add to database
+            db.add_citations(all_citations, review_id)
+            console.print(f"[green]Imported {len(all_citations)} citations from Zotero[/green]")
+            console.print(f"  - {len(citations_with_pdfs)} with PDFs")
+            console.print(f"  - {len(citations_without_pdfs)} without PDFs")
+
+            if citations_without_pdfs:
+                console.print("\n[yellow]Citations missing PDFs:[/yellow]")
+                for c in citations_without_pdfs[:5]:
+                    console.print(f"  - {c.title[:60]}...")
+                if len(citations_without_pdfs) > 5:
+                    console.print(f"  ... and {len(citations_without_pdfs) - 5} more")
+
+        else:
+            # Fall back to API client
+            config = get_config()
+            try:
+                zotero_client = ZoteroClient(config.zotero)
+            except ZoteroError as e:
+                console.print(f"[red]Error:[/red] {e}")
+                console.print("\n[yellow]Tip:[/yellow] Make sure Zotero is running locally.")
+                raise typer.Exit(1) from None
+
+            console.print("[blue]Connecting to Zotero API...[/blue]")
+
+            if not zotero_client.test_connection():
+                console.print("[red]Error:[/red] Could not connect to Zotero.")
+                console.print(
+                    "Make sure Zotero is running and 'Allow other applications' is enabled in Settings > Advanced."
+                )
+                raise typer.Exit(1)
+
+            with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as progress:
+                progress.add_task("Fetching citations from Zotero...", total=None)
+                citations_with_pdfs, citations_without_pdfs = zotero_client.get_citations_with_pdfs(collection, limit)
+
+            all_citations = citations_with_pdfs + citations_without_pdfs
+            if not all_citations:
+                console.print("[yellow]No citations found in Zotero.[/yellow]")
+                raise typer.Exit(0)
+
+            # Add to database
+            db.add_citations(all_citations, review_id)
+            console.print(f"[green]Imported {len(all_citations)} citations from Zotero[/green]")
+            console.print(f"  - {len(citations_with_pdfs)} with PDFs")
+            console.print(f"  - {len(citations_without_pdfs)} without PDFs")
+
+            if citations_without_pdfs:
+                console.print("\n[yellow]Citations missing PDFs:[/yellow]")
+                for c in citations_without_pdfs[:5]:
+                    console.print(f"  - {c.title[:60]}...")
+                if len(citations_without_pdfs) > 5:
+                    console.print(f"  ... and {len(citations_without_pdfs) - 5} more")
 
     else:
         # RIS import
@@ -517,11 +578,36 @@ def list_reviews() -> None:
 @app.command("zotero-collections")
 def zotero_collections() -> None:
     """List Zotero collections."""
+    from automated_sr.citations.zotero import ZoteroLocalClient
+
+    # Try local Zotero first (no API key needed)
+    local_client = ZoteroLocalClient()
+    if local_client.is_running():
+        collections = local_client.get_collections()
+        if collections:
+            # Format and display
+            table = Table(title="Zotero Collections")
+            table.add_column("Name", style="cyan")
+            table.add_column("ID", style="dim")
+
+            for coll in collections:
+                name = coll.get("name", "")
+                coll_id = coll.get("id", "")
+                # Indent based on level
+                level = coll.get("level", 0)
+                indent = "  " * level
+                table.add_row(f"{indent}{name}", str(coll_id))
+
+            console.print(table)
+            return
+
+    # Fall back to API client
     config = get_config()
     try:
         zotero_client = ZoteroClient(config.zotero)
     except ZoteroError as e:
         console.print(f"[red]Error:[/red] {e}")
+        console.print("\n[yellow]Tip:[/yellow] Make sure Zotero is running locally, or set ZOTERO_LIBRARY_ID.")
         raise typer.Exit(1) from None
 
     if not zotero_client.test_connection():
