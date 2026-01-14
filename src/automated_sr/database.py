@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS citations (
     doi TEXT,
     journal TEXT,
     pdf_path TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(review_id, title)
 );
 
 -- Abstract screening results (with reviewer_name for multi-reviewer support)
@@ -157,6 +158,7 @@ class Database:
     def _add_unique_indexes(self) -> None:
         """Add unique indexes to prevent duplicates (for existing databases without constraints)."""
         # Remove duplicates first, keeping the most recent record
+        self._remove_duplicates("citations", ["review_id", "title"])
         self._remove_duplicates("abstract_screening", ["citation_id", "reviewer_name"])
         self._remove_duplicates("fulltext_screening", ["citation_id", "reviewer_name"])
         self._remove_duplicates("extractions", ["citation_id"])
@@ -164,6 +166,7 @@ class Database:
 
         # Create unique indexes if they don't exist
         indexes = [
+            ("idx_citations_unique", "citations", "review_id, title"),
             ("idx_abstract_screening_unique", "abstract_screening", "citation_id, reviewer_name"),
             ("idx_fulltext_screening_unique", "fulltext_screening", "citation_id, reviewer_name"),
             ("idx_extractions_unique", "extractions", "citation_id"),
@@ -232,9 +235,14 @@ class Database:
 
     # Citation operations
     def add_citation(self, citation: Citation, review_id: int) -> int:
-        """Add a citation to a review and return its ID."""
+        """Add a citation to a review and return its ID.
+
+        If a citation with the same title already exists in the review,
+        returns the existing citation's ID instead of creating a duplicate.
+        """
+        # Use INSERT OR IGNORE to skip duplicates (based on UNIQUE(review_id, title))
         cursor = self.conn.execute(
-            """INSERT INTO citations
+            """INSERT OR IGNORE INTO citations
                (review_id, source, source_key, title, authors, abstract, year, doi, journal, pdf_path)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
@@ -251,6 +259,16 @@ class Database:
             ),
         )
         self.conn.commit()
+
+        # If INSERT was ignored (duplicate), fetch the existing ID
+        if cursor.lastrowid == 0 or cursor.rowcount == 0:
+            existing = self.conn.execute(
+                "SELECT id FROM citations WHERE review_id = ? AND title = ?",
+                (review_id, citation.title),
+            ).fetchone()
+            if existing:
+                return existing["id"]
+
         return cursor.lastrowid  # type: ignore[return-value]
 
     def add_citations(self, citations: list[Citation], review_id: int) -> list[int]:
