@@ -1466,5 +1466,114 @@ def analyze(
     db.close()
 
 
+@app.command("suggest-search")
+def suggest_search(
+    question: Annotated[str | None, typer.Argument(help="Research question to generate search strategies for")] = None,
+    review: Annotated[str | None, typer.Option("--review", "-r", help="Use objective from existing review")] = None,
+    databases: Annotated[
+        list[str] | None, typer.Option("--databases", "-d", help="Target databases (pubmed, scopus, wos, openalex)")
+    ] = None,
+    num_strategies: Annotated[int, typer.Option("--num-strategies", "-n", help="Strategies per database")] = 2,
+    model: Annotated[str | None, typer.Option("--model", "-m", help="LLM model to use")] = None,
+    output: Annotated[Path | None, typer.Option("--output", "-o", help="Save strategies to JSON file")] = None,
+) -> None:
+    """Generate database-specific search strategies for a systematic review."""
+    from automated_sr.search import SearchStrategyGenerator
+
+    db = get_db()
+
+    # Get question from review if not provided directly
+    if question is None and review is None:
+        console.print("[red]Error:[/red] Provide either a question or --review")
+        raise typer.Exit(1)
+
+    if review:
+        review_data = db.get_review_by_name(review)
+        if not review_data:
+            console.print(f"[red]Error:[/red] Review '{review}' not found")
+            raise typer.Exit(1)
+
+        protocol = db.get_protocol(review_data["id"])
+        if not protocol:
+            console.print(f"[red]Error:[/red] No protocol found for review '{review}'")
+            raise typer.Exit(1)
+
+        question = protocol.objective
+        console.print(f"[blue]Using objective from review '{review}'[/blue]")
+
+    console.print(f"\n[bold]Research Question:[/bold] {question}")
+
+    # Generate strategies
+    generator = SearchStrategyGenerator(model=model)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        progress.add_task("Generating search strategies...", total=None)
+        result = generator.generate(
+            question=question,  # type: ignore[arg-type]
+            databases=databases,
+            num_strategies=num_strategies,
+        )
+
+    if not result.strategies:
+        console.print("[red]No strategies generated. Please try again.[/red]")
+        raise typer.Exit(1)
+
+    # Display concept breakdown
+    if result.concept_breakdown:
+        console.print("\n[bold]Key Concepts Identified:[/bold]")
+        for concept_type, terms in result.concept_breakdown.items():
+            if terms:
+                console.print(f"  [cyan]{concept_type.title()}:[/cyan] {', '.join(terms)}")
+
+    # Group strategies by database
+    by_database: dict[str, list] = {}
+    for strategy in result.strategies:
+        if strategy.database not in by_database:
+            by_database[strategy.database] = []
+        by_database[strategy.database].append(strategy)
+
+    # Display strategies
+    for database, strategies in by_database.items():
+        console.print(f"\n[bold blue]━━━ {database} ━━━[/bold blue]")
+
+        for strategy in strategies:
+            sensitivity_color = {"high": "green", "medium": "yellow", "low": "red"}.get(
+                strategy.estimated_sensitivity, "white"
+            )
+            specificity_color = {"high": "green", "medium": "yellow", "low": "red"}.get(
+                strategy.estimated_specificity, "white"
+            )
+
+            console.print(f"\n[bold]{strategy.name}[/bold]")
+            console.print(
+                f"  Sensitivity: [{sensitivity_color}]{strategy.estimated_sensitivity}[/{sensitivity_color}] | "
+                f"Specificity: [{specificity_color}]{strategy.estimated_specificity}[/{specificity_color}]"
+            )
+            console.print(f"  [italic]{strategy.rationale}[/italic]")
+            console.print(f"\n  [cyan]{strategy.search_string}[/cyan]")
+
+    # Save to file if requested
+    if output:
+        import json
+
+        output_data = {
+            "question": result.question,
+            "concepts": result.concept_breakdown,
+            "strategies": [s.model_dump() for s in result.strategies],
+            "model": result.model,
+            "generated_at": result.generated_at.isoformat(),
+        }
+        with open(output, "w") as f:
+            json.dump(output_data, f, indent=2)
+        console.print(f"\n[green]Strategies saved to:[/green] {output}")
+
+    console.print(f"\n[green]Generated {len(result.strategies)} search strategies[/green]")
+    db.close()
+
+
 if __name__ == "__main__":
     app()

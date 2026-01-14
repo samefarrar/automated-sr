@@ -184,3 +184,25 @@ class ReviewStats(BaseModel):
     fulltext_uncertain: int = 0
     fulltext_pdf_errors: int = 0
     extracted: int = 0
+
+
+class SearchStrategy(BaseModel):
+    """A generated search strategy for a specific database."""
+
+    name: str
+    database: str
+    search_string: str
+    concepts: list[str]
+    rationale: str
+    estimated_sensitivity: str = "medium"  # "high", "medium", "low"
+    estimated_specificity: str = "medium"  # "high", "medium", "low"
+
+
+class SearchSuggestionResult(BaseModel):
+    """Result of search strategy generation."""
+
+    question: str
+    concept_breakdown: dict[str, list[str]] = Field(default_factory=dict)
+    strategies: list[SearchStrategy]
+    model: str
+    generated_at: datetime = Field(default_factory=datetime.now)
