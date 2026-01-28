@@ -12,6 +12,7 @@ dependencies = [
     "typer>=0.15.0",
     "rich>=13.9.0",
     "pyyaml>=6.0.0",
+    "python-dotenv>=1.0.0",
     # Multi-API support via LiteLLM
     "litellm>=1.50.0",
     "httpx>=0.25.0",

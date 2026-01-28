@@ -4,23 +4,28 @@ import logging
 from pathlib import Path
 from typing import Annotated
 
-import typer
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.table import Table
+from dotenv import load_dotenv
 
-from automated_sr.analysis import EffectMeasure, ForestPlot, MetaAnalysis, PoolingMethod, SecondaryFilter
-from automated_sr.citations.ris_parser import parse_ris_file
-from automated_sr.citations.zotero import ZoteroClient, ZoteroError
-from automated_sr.config import get_config
-from automated_sr.database import Database
-from automated_sr.extraction.extractor import DataExtractor
-from automated_sr.models import ExtractionVariable, ReviewProtocol
-from automated_sr.openalex import OpenAlexClient, PDFRetriever
-from automated_sr.output.exporter import Exporter
-from automated_sr.screening.abstract import AbstractScreener
-from automated_sr.screening.fulltext import FullTextScreener
-from automated_sr.screening.multi_reviewer import MultiReviewerScreener, create_default_reviewers
+# Load environment variables from .env file before any config is accessed
+load_dotenv()
+
+import typer  # noqa: E402
+from rich.console import Console  # noqa: E402
+from rich.progress import Progress, SpinnerColumn, TextColumn  # noqa: E402
+from rich.table import Table  # noqa: E402
+
+from automated_sr.analysis import EffectMeasure, ForestPlot, MetaAnalysis, PoolingMethod, SecondaryFilter  # noqa: E402
+from automated_sr.citations.ris_parser import parse_ris_file  # noqa: E402
+from automated_sr.citations.zotero import ZoteroClient, ZoteroError  # noqa: E402
+from automated_sr.config import get_config  # noqa: E402
+from automated_sr.database import Database  # noqa: E402
+from automated_sr.extraction.extractor import DataExtractor  # noqa: E402
+from automated_sr.models import ExtractionVariable, ReviewProtocol  # noqa: E402
+from automated_sr.openalex import OpenAlexClient, PDFRetriever  # noqa: E402
+from automated_sr.output.exporter import Exporter  # noqa: E402
+from automated_sr.screening.abstract import AbstractScreener  # noqa: E402
+from automated_sr.screening.fulltext import FullTextScreener  # noqa: E402
+from automated_sr.screening.multi_reviewer import MultiReviewerScreener, create_default_reviewers  # noqa: E402
 
 app = typer.Typer(
     name="sr",
@@ -307,6 +312,60 @@ def screen_abstracts(
     console.print(f"  Included: {run_included}")
     console.print(f"  Excluded: {run_excluded}")
     console.print(f"  Uncertain: {run_uncertain}")
+
+    db.close()
+
+
+@app.command("clear-failed")
+def clear_failed(
+    review: Annotated[str, typer.Option("--review", "-r", help="Review name")],
+    stage: Annotated[str, typer.Option("--stage", "-s", help="Stage: abstract or fulltext")] = "abstract",
+    decision: Annotated[str, typer.Option("--decision", "-d", help="Decision to clear")] = "uncertain",
+) -> None:
+    """Clear failed screening results (e.g., API errors marked as UNCERTAIN).
+
+    Use this to retry screenings that failed due to API errors. Cleared citations
+    will appear in the unscreened list and can be re-screened.
+    """
+    db = get_db()
+
+    review_data = db.get_review_by_name(review)
+    if not review_data:
+        console.print(f"[red]Error:[/red] Review '{review}' not found")
+        raise typer.Exit(1)
+
+    review_id = review_data["id"]
+
+    if stage not in ("abstract", "fulltext"):
+        console.print(f"[red]Error:[/red] Stage must be 'abstract' or 'fulltext', got '{stage}'")
+        raise typer.Exit(1)
+
+    if decision not in ("uncertain", "include", "exclude"):
+        console.print(f"[red]Error:[/red] Decision must be 'uncertain', 'include', or 'exclude', got '{decision}'")
+        raise typer.Exit(1)
+
+    # Show current counts before clearing
+    counts = db.get_screening_counts_by_decision(review_id, stage)
+    target_count = counts.get(decision, 0)
+
+    if target_count == 0:
+        console.print(f"[yellow]No {stage} screenings with decision='{decision}' to clear.[/yellow]")
+        db.close()
+        return
+
+    console.print(f"[blue]Current {stage} screening counts:[/blue]")
+    for dec, count in counts.items():
+        console.print(f"  {dec}: {count}")
+
+    # Confirm before clearing
+    if not typer.confirm(f"\nClear {target_count} {stage} screenings with decision='{decision}'?"):
+        console.print("[yellow]Aborted.[/yellow]")
+        db.close()
+        return
+
+    cleared = db.clear_failed_screenings(review_id, stage, decision)
+    console.print(f"[green]Cleared {cleared} {stage} screening results.[/green]")
+    console.print("These citations will now appear as unscreened and can be re-screened.")
 
     db.close()
 

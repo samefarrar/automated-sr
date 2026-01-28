@@ -696,3 +696,48 @@ class Database:
             (review_id,),
         )
         return [self._row_to_citation(row) for row in cursor.fetchall()]
+
+    def clear_failed_screenings(self, review_id: int, stage: str = "abstract", decision: str = "uncertain") -> int:
+        """Clear screening results with a specific decision (e.g., failed API calls marked as UNCERTAIN).
+
+        Args:
+            review_id: The review ID to clear screenings for
+            stage: Either 'abstract' or 'fulltext'
+            decision: The decision to clear (typically 'uncertain' for API errors)
+
+        Returns:
+            Number of screenings cleared
+        """
+        table = "abstract_screening" if stage == "abstract" else "fulltext_screening"
+
+        # Delete screenings with matching decision for citations in this review
+        cursor = self.conn.execute(
+            f"""DELETE FROM {table}
+                WHERE citation_id IN (SELECT id FROM citations WHERE review_id = ?)
+                AND decision = ?""",
+            (review_id, decision),
+        )
+        deleted_count = cursor.rowcount
+        self.conn.commit()
+
+        logger.info("Cleared %d %s screening results with decision=%s", deleted_count, stage, decision)
+        return deleted_count
+
+    def get_screening_counts_by_decision(self, review_id: int, stage: str = "abstract") -> dict[str, int]:
+        """Get counts of screenings by decision for a review.
+
+        Args:
+            review_id: The review ID
+            stage: Either 'abstract' or 'fulltext'
+
+        Returns:
+            Dictionary mapping decision -> count
+        """
+        table = "abstract_screening" if stage == "abstract" else "fulltext_screening"
+        cursor = self.conn.execute(
+            f"""SELECT decision, COUNT(*) as count FROM {table}
+                WHERE citation_id IN (SELECT id FROM citations WHERE review_id = ?)
+                GROUP BY decision""",
+            (review_id,),
+        )
+        return {row["decision"]: row["count"] for row in cursor.fetchall()}
