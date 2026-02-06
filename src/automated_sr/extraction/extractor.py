@@ -113,7 +113,10 @@ class DataExtractor:
         lines = []
         for var in variables:
             type_hint = f" (type: {var.type})" if var.type != "string" else ""
-            lines.append(f"- **{var.name}**{type_hint}: {var.description}")
+            line = f"- **{var.name}**{type_hint}: {var.description}"
+            if var.options:
+                line += f"\n  Valid options: {', '.join(var.options)}"
+            lines.append(line)
         return "\n".join(lines)
 
     def _parse_json_response(self, response: str) -> dict[str, Any]:

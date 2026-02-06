@@ -67,6 +67,7 @@ class ExtractionVariable(BaseModel):
     name: str
     description: str
     type: str = "string"  # string, integer, float, boolean, list
+    options: list[str] | None = None
 
 
 class ExtractionResult(BaseModel):
@@ -125,14 +126,28 @@ class ReviewProtocol(BaseModel):
             del data["settings"]
 
         # Convert extraction_variables dicts to ExtractionVariable objects
+        extraction_fields = set(ExtractionVariable.model_fields.keys())
         if "extraction_variables" in data:
-            data["extraction_variables"] = [
-                ExtractionVariable(**var) if isinstance(var, dict) else var for var in data["extraction_variables"]
-            ]
+            parsed_vars = []
+            for var in data["extraction_variables"]:
+                if isinstance(var, dict):
+                    # Strip unknown fields (e.g. 'required') and coerce
+                    # YAML boolean values in options back to strings
+                    filtered = {k: v for k, v in var.items() if k in extraction_fields}
+                    if "options" in filtered and filtered["options"] is not None:
+                        filtered["options"] = [str(o) for o in filtered["options"]]
+                    parsed_vars.append(ExtractionVariable(**filtered))
+                else:
+                    parsed_vars.append(var)
+            data["extraction_variables"] = parsed_vars
 
         # Convert reviewers dicts to ReviewerConfig objects
         if "reviewers" in data:
             data["reviewers"] = [ReviewerConfig(**rev) if isinstance(rev, dict) else rev for rev in data["reviewers"]]
+
+        # Strip unknown top-level keys
+        protocol_fields = set(cls.model_fields.keys())
+        data = {k: v for k, v in data.items() if k in protocol_fields}
 
         return cls(**data)
 
@@ -145,7 +160,9 @@ class ReviewProtocol(BaseModel):
             "objective": self.objective,
             "inclusion_criteria": self.inclusion_criteria,
             "exclusion_criteria": self.exclusion_criteria,
-            "extraction_variables": [var.model_dump() for var in self.extraction_variables],
+            "extraction_variables": [
+                var.model_dump(exclude_none=True, exclude_defaults=True) for var in self.extraction_variables
+            ],
             "settings": {"model": self.model},
         }
 

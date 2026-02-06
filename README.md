@@ -72,7 +72,7 @@ exclusion_criteria:
 # Default model for single-reviewer screening
 model: anthropic/claude-sonnet-4-5-20250929
 
-# Data extraction variables
+# Data extraction variables (supported types: string, integer, float, boolean, list)
 extraction_variables:
   - name: sample_size
     description: Total number of participants
@@ -83,9 +83,20 @@ extraction_variables:
   - name: intervention
     description: Name of the intervention
     type: string
-  - name: comparator
-    description: Name of the comparator/control
+  - name: study_design
+    description: Study design type
     type: string
+    options:
+      - RCT
+      - cohort
+      - case-control
+      - cross-sectional
+  - name: outcomes_measured
+    description: Outcomes measured in the study
+    type: list
+  - name: blinded
+    description: Whether the study was blinded
+    type: boolean
 
 # Multi-reviewer configuration (optional)
 reviewers:

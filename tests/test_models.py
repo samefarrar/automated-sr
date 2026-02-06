@@ -159,6 +159,48 @@ reviewers:
         assert protocol.model == "test-model"
         assert len(protocol.reviewers) == 1
 
+    def test_from_yaml_with_options(self, temp_dir: Path) -> None:
+        """Test loading protocol with extraction variable options."""
+        yaml_content = """
+name: options-test
+objective: Test options support
+inclusion_criteria:
+  - Criterion 1
+exclusion_criteria:
+  - Exclusion 1
+extraction_variables:
+  - name: design
+    description: Study design
+    type: string
+    options:
+      - RCT
+      - cohort
+      - case-control
+  - name: outcomes
+    description: Outcomes measured
+    type: list
+    options:
+      - mortality
+      - morbidity
+  - name: blinded
+    description: Was the study blinded
+    type: boolean
+  - name: sample_size
+    description: Number of participants
+    type: integer
+"""
+        yaml_path = temp_dir / "protocol.yaml"
+        yaml_path.write_text(yaml_content)
+
+        protocol = ReviewProtocol.from_yaml(yaml_path)
+
+        assert len(protocol.extraction_variables) == 4
+        design_var = protocol.extraction_variables[0]
+        assert design_var.options == ["RCT", "cohort", "case-control"]
+        assert protocol.extraction_variables[1].type == "list"
+        assert protocol.extraction_variables[2].type == "boolean"
+        assert protocol.extraction_variables[3].options is None
+
     def test_to_yaml(self, sample_protocol: ReviewProtocol, temp_dir: Path) -> None:
         """Test saving protocol to YAML file."""
         yaml_path = temp_dir / "output.yaml"
@@ -170,6 +212,33 @@ reviewers:
         loaded = ReviewProtocol.from_yaml(yaml_path)
         assert loaded.name == sample_protocol.name
         assert loaded.objective == sample_protocol.objective
+
+    def test_to_yaml_with_options(self, temp_dir: Path) -> None:
+        """Test round-trip with extraction variable options."""
+        protocol = ReviewProtocol(
+            name="options-roundtrip",
+            objective="Test options round-trip",
+            inclusion_criteria=["Criterion 1"],
+            exclusion_criteria=["Exclusion 1"],
+            extraction_variables=[
+                ExtractionVariable(
+                    name="design",
+                    description="Study design",
+                    options=["RCT", "cohort"],
+                ),
+                ExtractionVariable(
+                    name="count",
+                    description="Count",
+                    type="integer",
+                ),
+            ],
+        )
+        yaml_path = temp_dir / "options.yaml"
+        protocol.to_yaml(yaml_path)
+
+        loaded = ReviewProtocol.from_yaml(yaml_path)
+        assert loaded.extraction_variables[0].options == ["RCT", "cohort"]
+        assert loaded.extraction_variables[1].options is None
 
 
 class TestScreeningResult:
@@ -222,3 +291,28 @@ class TestExtractionVariable:
         """Test integer type."""
         var = ExtractionVariable(name="count", description="Count", type="integer")
         assert var.type == "integer"
+
+    def test_options(self) -> None:
+        """Test extraction variable with options."""
+        var = ExtractionVariable(
+            name="design",
+            description="Study design",
+            options=["RCT", "cohort", "case-control"],
+        )
+        assert var.options == ["RCT", "cohort", "case-control"]
+        assert var.type == "string"
+
+    def test_options_default_none(self) -> None:
+        """Test options defaults to None."""
+        var = ExtractionVariable(name="test", description="Test variable")
+        assert var.options is None
+
+    def test_boolean_type(self) -> None:
+        """Test boolean type."""
+        var = ExtractionVariable(name="blinded", description="Blinding", type="boolean")
+        assert var.type == "boolean"
+
+    def test_list_type(self) -> None:
+        """Test list type."""
+        var = ExtractionVariable(name="outcomes", description="Outcomes", type="list")
+        assert var.type == "list"
