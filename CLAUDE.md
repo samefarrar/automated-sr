@@ -119,6 +119,22 @@ This document contains critical information about working with this codebase. Fo
    - Document public APIs
    - Test thoroughly
 
+## Protocol YAML Gotchas
+
+- **YAML auto-casts bare `yes`/`no`/`true`/`false` to booleans.** In option lists, always
+  quote values that start with these words:
+  ```yaml
+  options:
+    - "yes (IAIHG or equivalent)"   # Quoted — stays a string
+    - no/unclear                     # OK — the slash prevents auto-cast
+    - yes                            # BAD — becomes boolean True
+  ```
+  The parser coerces these back to strings, but quoting in the YAML is cleaner.
+- Unknown fields in `extraction_variables` (e.g. `required`) are silently stripped
+  during parsing. Only `name`, `description`, `type`, and `options` are used.
+- Unknown top-level YAML keys are silently ignored. Extra metadata sections won't
+  break parsing but won't be used by the tool either.
+
 ## Exception Handling
 
 - **Always use `logger.exception()` instead of `logger.error()` when catching exceptions**

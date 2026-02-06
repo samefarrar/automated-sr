@@ -247,6 +247,46 @@ sr status --review my-review
 | `sr zotero-collections` | List Zotero collections |
 | `sr suggest-search` | Generate database-specific search strategies |
 
+## Protocol YAML Reference
+
+### Top-level fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Review name (must match the initialized review) |
+| `objective` | Yes | Research question or objective (supports multi-line `\|`) |
+| `inclusion_criteria` | Yes | List of inclusion criteria |
+| `exclusion_criteria` | Yes | List of exclusion criteria |
+| `model` | No | Default LLM model for single-reviewer screening |
+| `extraction_variables` | No | List of variables to extract from included articles |
+| `reviewers` | No | Multi-reviewer configuration (see below) |
+
+### Extraction variables
+
+Each variable supports:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Variable name (used as the JSON key in extracted data) |
+| `description` | Yes | What to extract — shown to the LLM in the prompt |
+| `type` | No | `string` (default), `integer`, `float`, `boolean`, or `list` |
+| `options` | No | Constrained list of valid values — shown to the LLM as guidance |
+
+> **Note:** YAML auto-casts bare `yes`, `no`, `true`, `false` to booleans. Quote option values that start with these words: `"yes (confirmed)"`.
+
+### Reviewer configuration
+
+Each reviewer supports:
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `name` | Yes | — | Reviewer identifier |
+| `model` | Yes | — | LiteLLM model name (e.g. `anthropic/claude-3-5-haiku-20241022`) |
+| `api` | Yes | — | Provider: `anthropic`, `openai`, or `openrouter` |
+| `prompt_template` | No | `rigorous` | `rigorous`, `sensitive`, `specific`, or `custom` |
+| `custom_prompt` | No | — | Custom prompt text (when template is `custom`) |
+| `role` | No | `primary` | `primary` or `tiebreaker` |
+
 ## Multi-Reviewer Screening
 
 The tool supports configurable multi-reviewer screening to improve accuracy:
