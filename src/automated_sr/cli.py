@@ -155,9 +155,12 @@ def import_citations(
                     source="zotero",
                     source_key=item.get("zotero_key"),
                     title=item.get("title", "Unknown"),
+                    authors=item.get("authors", []),
+                    year=item.get("year"),
+                    abstract=item.get("abstract"),
                     doi=item.get("doi"),
+                    journal=item.get("journal"),
                     pdf_path=item.get("pdf_path"),
-                    authors=[],  # Local API doesn't provide full metadata easily
                 )
 
                 if item.get("pdf_path"):

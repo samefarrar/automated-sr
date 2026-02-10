@@ -150,9 +150,19 @@ class Exporter:
                     "journal": citation.journal,
                 }
 
-                # Add extracted data
+                # Add extracted data, preferring citation metadata for
+                # first_author and publication_year over LLM-extracted values
                 for var in variable_names:
                     value = extraction.extracted_data.get(var)
+
+                    if var == "first_author" and citation.authors:
+                        # Use first author's last name from structured metadata
+                        first = citation.authors[0]
+                        value = first.split(",")[0].strip() if first else value
+
+                    if var == "publication_year" and citation.year:
+                        value = citation.year
+
                     if isinstance(value, list):
                         row[var] = "; ".join(str(v) for v in value)
                     else:

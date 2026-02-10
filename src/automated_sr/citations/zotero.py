@@ -1,6 +1,7 @@
 """Zotero integration for accessing citations and PDFs."""
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -217,6 +218,29 @@ class ZoteroLocalClient:
                 if not item_key:
                     continue
 
+                # Extract authors from creators
+                creators = data.get("creators", [])
+                authors = []
+                for creator in creators:
+                    if creator.get("creatorType") in ("author", "editor"):
+                        name_parts = []
+                        if creator.get("lastName"):
+                            name_parts.append(creator["lastName"])
+                        if creator.get("firstName"):
+                            name_parts.append(creator["firstName"])
+                        if name_parts:
+                            authors.append(", ".join(name_parts))
+                        elif creator.get("name"):
+                            authors.append(creator["name"])
+
+                # Parse year from date
+                year = None
+                date_str = data.get("date", "")
+                if date_str:
+                    year_match = re.search(r"\b(19|20)\d{2}\b", date_str)
+                    if year_match:
+                        year = int(year_match.group())
+
                 # Get PDF attachment
                 pdf_path = self._get_pdf_for_item(zot, item_key)
 
@@ -224,6 +248,10 @@ class ZoteroLocalClient:
                     {
                         "doi": doi,
                         "title": title,
+                        "authors": authors,
+                        "year": year,
+                        "abstract": data.get("abstractNote"),
+                        "journal": data.get("publicationTitle") or data.get("journalAbbreviation"),
                         "pdf_path": pdf_path,
                         "zotero_key": item_key,
                     }
@@ -578,8 +606,6 @@ class ZoteroClient:
         date_str = data.get("date", "")
         if date_str:
             # Try to extract 4-digit year
-            import re
-
             year_match = re.search(r"\b(19|20)\d{2}\b", date_str)
             if year_match:
                 year = int(year_match.group())

@@ -1,0 +1,407 @@
+# checkpoint-receptors-aih-protocol.yaml
+
+name: checkpoint-receptors-aih
+
+objective: |
+  To systematically review the evidence on whether inhibitory checkpoint
+  receptors (BTLA, CTLA-4, PD-1, TIGIT, VISTA, LAG-3, CD200R) and their
+  ligands are involved in the pathogenesis of autoimmune hepatitis (AIH),
+  including their expression patterns, functional roles, genetic associations,
+  and potential as therapeutic targets.
+
+inclusion_criteria:
+  - Original research articles (human or animal studies)
+  - Studies examining expression, function, or genetic variants of BTLA, CTLA-4, PD-1, TIGIT, VISTA, LAG-3, or CD200R
+  - Studies in patients with autoimmune hepatitis or animal models of AIH
+  - Studies comparing AIH to healthy controls or other liver disease controls
+  - Published in English
+
+exclusion_criteria:
+  - Conference abstracts without full text
+  - Review articles, editorials, commentaries, letters without original data
+  - Case reports with fewer than 3 patients
+  - Studies exclusively on checkpoint inhibitor drug-induced liver injury (ICI-DILI)
+  - Studies on primary biliary cholangitis or primary sclerosing cholangitis without AIH comparison
+
+# Default model for single-reviewer screening
+model: anthropic/claude-sonnet-4-5-20250929
+
+# Data extraction configuration
+extraction_variables:
+  # Note: first_author and publication_year are auto-populated from citation
+  # metadata (PubMed/Zotero) by the exporter — no need to extract via LLM.
+
+  # Study identifiers
+  - name: country
+    description: Country where study was conducted
+    type: string
+    required: true
+
+  - name: funding_source
+    description: Funding source(s) reported
+    type: string
+    required: false
+
+  - name: conflicts_of_interest
+    description: Conflicts of interest declared (none/present/not reported)
+    type: string
+    required: false
+
+  # Study design
+  - name: study_design
+    description: Study design type
+    type: string
+    required: true
+    options:
+      - cross-sectional
+      - case-control
+      - cohort
+      - animal model
+      - in vitro
+      - mixed
+
+  - name: species
+    description: Species studied
+    type: string
+    required: true
+    options:
+      - human
+      - mouse
+      - rat
+      - other
+      - multiple
+
+  # Human population characteristics
+  - name: aih_diagnostic_criteria
+    description: Diagnostic criteria used for AIH (e.g., IAIHG simplified, IAIHG revised, clinical)
+    type: string
+    required: false
+
+  - name: aih_sample_size
+    description: Number of AIH patients/samples
+    type: integer
+    required: true
+
+  - name: control_sample_size
+    description: Number of control subjects/samples
+    type: integer
+    required: false
+
+  - name: control_type
+    description: Type of control group(s)
+    type: list
+    required: false
+    options:
+      - healthy
+      - chronic hepatitis B
+      - chronic hepatitis C
+      - NAFLD/NASH
+      - drug-induced liver injury
+      - primary biliary cholangitis
+      - other liver disease
+      - disease controls (non-liver)
+
+  - name: treatment_status
+    description: Treatment status of AIH patients at time of sampling
+    type: string
+    required: false
+    options:
+      - treatment-naive
+      - on immunosuppression
+      - remission
+      - mixed/not specified
+
+  - name: aih_subtype
+    description: AIH subtype if specified
+    type: string
+    required: false
+    options:
+      - type 1
+      - type 2
+      - not specified
+
+  # Animal model characteristics
+  - name: animal_model
+    description: Animal model used (if applicable)
+    type: string
+    required: false
+    options:
+      - ConA-induced
+      - S100-induced
+      - adenovirus-induced
+      - transgenic
+      - other
+      - not applicable
+
+  - name: animal_strain
+    description: Animal strain (e.g., C57BL/6, BALB/c)
+    type: string
+    required: false
+
+  # Checkpoint receptors studied
+  - name: receptors_studied
+    description: Which checkpoint receptors were examined
+    type: list
+    required: true
+    options:
+      - BTLA
+      - CTLA-4
+      - PD-1
+      - TIGIT
+      - VISTA
+      - LAG-3
+      - CD200R
+      - TIM-3
+      - other
+
+  - name: ligands_studied
+    description: Which checkpoint ligands were examined (if any)
+    type: list
+    required: false
+    options:
+      - HVEM (BTLA ligand)
+      - CD80/B7-1 (CTLA-4 ligand)
+      - CD86/B7-2 (CTLA-4 ligand)
+      - PD-L1/CD274
+      - PD-L2/CD273
+      - CD155/PVR (TIGIT ligand)
+      - CD112/Nectin-2 (TIGIT ligand)
+      - VSIG3 (VISTA ligand)
+      - MHC-II (LAG-3 ligand)
+      - FGL1 (LAG-3 ligand)
+      - CD200 (CD200R ligand)
+      - Galectin-9 (TIM-3 ligand)
+      - none studied
+      - other
+
+  # Sample and methods
+  - name: sample_type
+    description: Biological samples analysed
+    type: list
+    required: true
+    options:
+      - peripheral blood
+      - liver biopsy
+      - liver explant
+      - serum/plasma (soluble receptors)
+      - other
+
+  - name: cell_populations
+    description: Cell populations examined
+    type: list
+    required: false
+    options:
+      - CD4+ T cells
+      - CD8+ T cells
+      - Tregs (CD4+CD25+FoxP3+)
+      - Tr1 cells
+      - NK cells
+      - NKT cells
+      - B cells
+      - monocytes/macrophages
+      - dendritic cells
+      - hepatocytes
+      - cholangiocytes
+      - liver sinusoidal endothelial cells
+      - bulk PBMC
+      - bulk liver tissue
+      - other
+
+  - name: methods_expression
+    description: Methods used to assess expression
+    type: list
+    required: true
+    options:
+      - flow cytometry
+      - mass cytometry (CyTOF)
+      - immunohistochemistry
+      - immunofluorescence
+      - Western blot
+      - qPCR
+      - RNA-seq
+      - single-cell RNA-seq
+      - ELISA (soluble)
+      - multiplex assay
+      - other
+
+  - name: methods_functional
+    description: Functional assays performed (if any)
+    type: list
+    required: false
+    options:
+      - suppression assay
+      - proliferation assay
+      - cytokine production
+      - cytotoxicity assay
+      - blocking antibody experiments
+      - knockout/knockdown
+      - receptor agonist treatment
+      - co-culture experiments
+      - none
+      - other
+
+  - name: genetic_analysis
+    description: Genetic analysis performed (if any)
+    type: list
+    required: false
+    options:
+      - candidate SNP genotyping
+      - GWAS
+      - whole exome sequencing
+      - whole genome sequencing
+      - HLA typing
+      - expression QTL
+      - none
+      - other
+
+  # Key findings - create one entry per receptor if multiple studied
+  - name: findings_summary
+    description: |
+      Structured summary of findings for each receptor studied.
+      Include: receptor name, direction of change (increased/decreased/no change),
+      compartment (peripheral/intrahepatic/both), cell population,
+      statistical significance, and key numerical results if reported.
+    type: text
+    required: true
+
+  - name: expression_direction
+    description: Overall direction of checkpoint receptor expression in AIH vs controls
+    type: string
+    required: true
+    options:
+      - increased in AIH
+      - decreased in AIH
+      - no significant difference
+      - mixed results (varies by receptor/compartment)
+      - not directly compared
+
+  - name: correlation_disease_activity
+    description: Was receptor expression correlated with disease activity markers?
+    type: string
+    required: false
+    options:
+      - positive correlation with ALT/AST
+      - negative correlation with ALT/AST
+      - correlation with IgG
+      - correlation with histological score
+      - correlation with treatment response
+      - no correlation found
+      - not assessed
+      - multiple correlations (describe in findings_summary)
+
+  - name: functional_impairment
+    description: Evidence of functional impairment of checkpoint pathway?
+    type: string
+    required: false
+    options:
+      - yes - impaired suppressive function
+      - yes - impaired signalling
+      - no - function preserved
+      - not assessed
+      - unclear/conflicting
+
+  - name: genetic_association
+    description: Genetic variants associated with AIH susceptibility or phenotype?
+    type: string
+    required: false
+    options:
+      - yes - associated with AIH risk
+      - yes - associated with disease phenotype
+      - yes - associated with treatment response
+      - no association found
+      - not assessed
+
+  # Authors' interpretation
+  - name: proposed_mechanism
+    description: Authors' proposed mechanistic role for checkpoint receptor(s) in AIH
+    type: string
+    required: false
+    options:
+      - pathogenic (checkpoint failure promotes autoimmunity)
+      - protective (compensatory upregulation)
+      - dual role (context-dependent)
+      - unclear/not specified
+
+  - name: therapeutic_implications
+    description: Did authors suggest therapeutic targeting of checkpoint pathway?
+    type: boolean
+    required: false
+
+  - name: therapeutic_implications_detail
+    description: Details of suggested therapeutic approach (if any)
+    type: text
+    required: false
+
+  # Quality assessment (modified Newcastle-Ottawa)
+  - name: qa_selection_aih_diagnosis
+    description: "Selection: Was AIH diagnosis clearly defined using established criteria?"
+    type: string
+    required: true
+    options:
+      - yes (IAIHG or equivalent)
+      - partial (clinical diagnosis, criteria not specified)
+      - no/unclear
+
+  - name: qa_selection_controls
+    description: "Selection: Were appropriate control groups included?"
+    type: string
+    required: true
+    options:
+      - yes (healthy + disease controls)
+      - partial (healthy only or disease only)
+      - no controls
+      - not applicable (animal study)
+
+  - name: qa_comparability_matching
+    description: "Comparability: Were groups matched or adjusted for age and sex?"
+    type: string
+    required: true
+    options:
+      - yes (matched or statistically adjusted)
+      - partial (reported but not matched)
+      - no/not reported
+
+  - name: qa_comparability_treatment
+    description: "Comparability: Was treatment status at sampling controlled or reported?"
+    type: string
+    required: true
+    options:
+      - yes (treatment-naive or clearly defined)
+      - partial (mixed, but reported)
+      - no/not reported
+
+  - name: qa_outcome_methods
+    description: "Outcome: Were validated methods used for receptor quantification?"
+    type: string
+    required: true
+    options:
+      - yes (standard methods, antibodies specified)
+      - partial (methods described but limited detail)
+      - no/unclear
+
+  - name: qa_outcome_blinding
+    description: "Outcome: Was blinding reported for outcome assessment?"
+    type: string
+    required: true
+    options:
+      - yes
+      - no/not reported
+
+  - name: qa_sample_size
+    description: "Was sample size adequate or justified?"
+    type: string
+    required: true
+    options:
+      - yes (>30 per group or power calculation)
+      - moderate (10-30 per group)
+      - small (<10 per group)
+      - not applicable (mechanistic/animal)
+
+  - name: overall_quality
+    description: Overall quality rating based on above domains
+    type: string
+    required: true
+    options:
+      - high
+      - moderate
+      - low
