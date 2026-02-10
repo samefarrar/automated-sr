@@ -119,6 +119,18 @@ This document contains critical information about working with this codebase. Fo
    - Document public APIs
    - Test thoroughly
 
+## Data Architecture
+
+- **Citation metadata** (authors, year, journal, DOI) comes from the import source
+  (RIS file, Zotero, OpenAlex) and is authoritative. The exporter auto-populates
+  `first_author` and `publication_year` CSV columns from this metadata.
+- **Extraction variables** are for data that requires reading the full text (e.g.,
+  sample sizes, methods, findings). Don't duplicate metadata fields as extraction
+  variables — the LLM will guess wrong (e.g., picking ahead-of-print dates or
+  authors from cited references).
+- If citation metadata is missing (e.g., empty authors list), the exporter falls
+  back to LLM-extracted values.
+
 ## Protocol YAML Gotchas
 
 - **YAML auto-casts bare `yes`/`no`/`true`/`false` to booleans.** In option lists, always
